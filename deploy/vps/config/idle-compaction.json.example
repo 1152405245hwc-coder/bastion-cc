@@ -1,0 +1,5 @@
+{
+  "enabled": true,
+  "afterMinutes": 50,
+  "minTokens": 100000
+}

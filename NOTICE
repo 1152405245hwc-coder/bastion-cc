@@ -1,0 +1,3 @@
+CC Relay Forge is an independent implementation.
+
+It does not include third-party proprietary application binaries, Claude Code, the Claude Agent SDK, or any provider credentials. Provider adapters and bundled dependencies retain their own licenses and notices. Before distributing a build, regenerate this file from the dependency lockfile and SBOM.

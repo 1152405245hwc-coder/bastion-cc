@@ -1,0 +1,24 @@
+services:
+  cc-relay-forge:
+    build: .
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      CCRF_BIND_HOST: "0.0.0.0"
+      CCRF_BIND_PORT: "8787"
+      CCRF_EVENT_DB: "/data/events.sqlite"
+      CCRF_PROVIDER: "${CCRF_PROVIDER:-mock}"
+      CCRF_AUTH_TOKEN: "${CCRF_AUTH_TOKEN:?set CCRF_AUTH_TOKEN in private env}"
+      CCRF_TOTP_SECRET: "${CCRF_TOTP_SECRET:-}"
+      CCRF_BODY_KEY: "${CCRF_BODY_KEY:-}"
+    volumes:
+      - /srv/cc-relay-forge:/data
+    restart: unless-stopped

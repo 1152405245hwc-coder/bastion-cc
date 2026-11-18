@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BastionCC 棱堡 · 网页控制台</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>BastionCC · 棱堡</h1>
+      <span class="subtitle">远程会话控制、原生 CLI 续接与实时状态工作台</span>
+      <span id="metrics-pill" class="metrics-pill">📊 会话 0 · 轮次 0 · ~0 Tokens · 缓存命中 0%</span>
+    </div>
+    <form id="connect-form" class="connect-bar">
+      <label>服务器地址 <input id="connect-base" name="base" value="" placeholder="留空默认同源或 http://127.0.0.1:8787"></label>
+      <label>访问令牌 <input id="connect-token" name="token" type="password" autocomplete="off" placeholder="本机回环可选"></label>
+      <label>TOTP <input id="connect-totp" name="totp" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="6位动态码"></label>
+      <button type="submit">连接</button>
+    </form>
+  </header>
+
+  <main class="layout">
+    <aside class="panel sidebar">
+      <div class="panel-header">
+        <h2>项目与会话</h2>
+        <button id="reload-sessions" type="button" class="secondary">刷新</button>
+      </div>
+      <input id="session-search" type="search" placeholder="🔍 搜索会话 / 项目...">
+      <form id="new-session-form" class="stack-form">
+        <input id="project-input" name="project" placeholder="所属项目名 / 目录 (可选)">
+        <div class="inline-form">
+          <input id="session-input" name="session" placeholder="会话名 / ID (留空自动生成)">
+          <button type="submit">+ 新建</button>
+        </div>
+      </form>
+      <div id="session-groups"></div>
+      <div class="sidebar-actions">
+        <button id="delete-session" type="button" class="danger" disabled>🗑️ 删除会话</button>
+        <button id="compact-sessions" type="button" class="secondary">🧹 压缩历史</button>
+      </div>
+
+      <details class="devices-drawer">
+        <summary>多设备授权管理</summary>
+        <form id="enroll-device-form" class="stack-form">
+          <input name="deviceId" placeholder="device-id (如 phone-1)" required>
+          <input name="label" placeholder="设备备注名" required>
+          <input name="scopes" value="control,read" placeholder="control,read,runner" required>
+          <div class="inline-form">
+            <button type="submit">签发令牌</button>
+            <button id="pair-code-btn" type="button" class="secondary">📱 生成6位配对码</button>
+          </div>
+        </form>
+        <pre id="enrolled-credential" class="credential-box" hidden></pre>
+        <ul id="device-list" class="device-list"></ul>
+      </details>
+    </aside>
+
+    <section class="panel workspace">
+      <div class="status-bar">
+        <div>
+          会话: <strong id="active-session">未选择</strong>
+          <span id="active-project-tag" class="session-badge"></span>
+          <span id="active-claude-tag" class="session-badge"></span>
+          · 状态: <strong id="session-status">未连接</strong>
+          · Gen: <strong id="generation">-</strong>
+          · Run: <strong id="run-id">无</strong>
+        </div>
+        <div class="actions">
+          <button id="rename-toggle" type="button" class="secondary" disabled>✏️ 重命名</button>
+          <button id="fork-session" type="button" class="secondary" disabled>🌿 分叉</button>
+          <button id="export-session" type="button" class="secondary" disabled>📥 导出</button>
+          <button id="cancel" type="button" disabled>取消</button>
+          <button id="disconnect" type="button" class="secondary" disabled>断开</button>
+          <button id="reconnect" type="button" class="secondary" disabled>重连</button>
+        </div>
+      </div>
+
+      <form id="rename-bar" class="inline-edit" hidden>
+        <input id="rename-title-input" placeholder="会话标题">
+        <input id="rename-project-input" placeholder="所属项目">
+        <button type="submit">保存</button>
+        <button id="rename-cancel" type="button" class="secondary">取消</button>
+      </form>
+
+      <div id="approval-banner" class="approval-banner" hidden>
+        <span>当前任务等待你的高危操作审批。</span>
+        <div class="approval-buttons">
+          <button id="approve-yes" type="button">批准继续</button>
+          <button id="approve-no" type="button" class="danger">拒绝取消</button>
+        </div>
+      </div>
+
+      <div id="transcript-view" class="transcript">
+        <div id="empty-state" class="empty-guide">
+          <h3>🚀 欢迎使用 BastionCC（棱堡）网页控制台</h3>
+          <ol>
+            <li>右上角填入服务器地址与访问令牌点击 <strong>连接</strong>（本机同源访问自动连入）。</li>
+            <li>左侧填写项目并点击 <strong>+ 新建</strong>，或展开多设备授权签发 <strong>6位配对码</strong>。</li>
+            <li>下方输入框支持 <strong>Enter 发送</strong>（中文输入法选词按 Enter 防误触）与 <strong>Shift+Enter 换行</strong>。</li>
+          </ol>
+        </div>
+      </div>
+
+      <form id="run-form" class="composer">
+        <label for="prompt-input" class="sr-only">任务指令</label>
+        <textarea id="prompt-input" name="prompt" placeholder="输入指令（Enter 发送 · Shift+Enter 换行 · 正文加密存库不进事件流）" required></textarea>
+        <div class="composer-footer">
+          <div class="composer-options">
+            <label>审批模式
+              <select id="approval-mode" name="approvalMode">
+                <option value="manual">手动审批</option>
+                <option value="auto-edit">自动改文件</option>
+                <option value="plan-only">仅生成计划</option>
+              </select>
+            </label>
+            <label>推理强度
+              <select id="reasoning-effort" name="reasoningEffort">
+                <option value="low">低 (快速)</option>
+                <option value="medium" selected>中 (标准)</option>
+                <option value="high">高 (深度)</option>
+                <option value="max">极限</option>
+              </select>
+            </label>
+            <label>账号隔离仓
+              <select id="account-profile" name="accountProfile">
+                <option value="">默认账号</option>
+                <option value="pro-1">pro-1</option>
+                <option value="pro-2">pro-2</option>
+              </select>
+            </label>
+            <label class="checkbox-label"><input type="checkbox" name="execute" checked> 直接由服务端执行</label>
+          </div>
+          <div class="composer-actions">
+            <button id="retry-last" type="button" class="secondary" hidden>🔄 重发上一条</button>
+            <button id="load-transcript" type="button" class="secondary" disabled>刷新正文</button>
+            <button type="submit" id="start-run-btn" disabled>发送执行</button>
+          </div>
+        </div>
+      </form>
+      <p id="notice" class="notice" hidden></p>
+      <pre id="error" role="alert"></pre>
+    </section>
+
+    <aside class="panel timeline">
+      <div class="panel-header">
+        <h2>事件时间线</h2>
+        <div class="stream-controls">
+          <button id="refresh" type="button" class="secondary" disabled>拉取</button>
+          <button id="toggle-stream" type="button" class="secondary" disabled>SSE 实时</button>
+        </div>
+      </div>
+      <ol id="events" class="event-list"></ol>
+    </aside>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+{"name":"@cc-relay-forge/server-control","version":"0.1.0","type":"module","exports":{".":"./src/index.ts"},"dependencies":{"@cc-relay-forge/protocol":"0.1.0","@cc-relay-forge/server-scheduler":"0.1.0","@cc-relay-forge/server-storage":"0.1.0"}}

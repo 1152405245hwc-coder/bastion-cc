@@ -1,0 +1,6 @@
+{
+  "name": "@cc-relay-forge/desktop",
+  "private": true,
+  "type": "module",
+  "main": "src/main.mjs"
+}

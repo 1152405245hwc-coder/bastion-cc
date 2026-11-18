@@ -1,0 +1,4 @@
+# /etc/default/zramswap
+ALGO=zstd
+SIZE=256
+PRIORITY=100

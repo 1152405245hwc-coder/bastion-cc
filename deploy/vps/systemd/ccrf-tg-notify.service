@@ -1,0 +1,23 @@
+[Unit]
+Description=CC Relay Forge redacted session notifier
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/srv/cc-relay-forge/state/sessions.sqlite
+ReadWritePaths=/var/lib/ccrf-notify
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+EnvironmentFile=/etc/ccrf-notify.env
+ExecStart=/usr/local/bin/ccrf-tg-notify.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

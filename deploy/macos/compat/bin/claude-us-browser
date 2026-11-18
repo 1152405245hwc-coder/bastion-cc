@@ -1,0 +1,124 @@
+#!/bin/sh
+set -eu
+
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+
+SOCKS_PORT="${CCRF_SOCKS_PORT:-28787}"
+SOCKS_LABEL="${CCRF_SOCKS_LABEL:-}"
+PROFILE_DIR="${CCRF_PROFILE_DIR:-$HOME/.local/share/claude-us-browser/profile}"
+LOG_FILE="${CCRF_BROWSER_LOG:-$HOME/.local/share/claude-us-browser/browser.log}"
+BRAVE_APP="${CCRF_BRAVE_APP:-/Applications/Brave Browser.app}"
+TARGET_URL="${1:-https://claude.ai/}"
+
+case "$TARGET_URL" in
+  https://*) ;;
+  *)
+    echo "Refusing non-HTTPS URL: $TARGET_URL" >&2
+    exit 1
+    ;;
+esac
+
+if ! /usr/bin/nc -z -G 2 127.0.0.1 "$SOCKS_PORT" >/dev/null 2>&1; then
+  if [ -n "$SOCKS_LABEL" ]; then
+    /bin/launchctl kickstart -k "gui/$(/usr/bin/id -u)/$SOCKS_LABEL" >/dev/null 2>&1 || true
+    i=0
+    while [ "$i" -lt 25 ]; do
+      if /usr/bin/nc -z -G 1 127.0.0.1 "$SOCKS_PORT" >/dev/null 2>&1; then
+        break
+      fi
+      /bin/sleep 0.2
+      i=$((i + 1))
+    done
+  fi
+fi
+
+if ! /usr/bin/nc -z -G 2 127.0.0.1 "$SOCKS_PORT" >/dev/null 2>&1; then
+  echo "SOCKS5 is not listening on 127.0.0.1:$SOCKS_PORT" >&2
+  echo "Start the dedicated LaunchAgent before opening OAuth." >&2
+  exit 1
+fi
+
+if [ ! -d "$BRAVE_APP" ]; then
+  echo "Brave application not found: $BRAVE_APP" >&2
+  exit 1
+fi
+
+if [ -L "$PROFILE_DIR/SingletonLock" ] && /usr/bin/pgrep -f "$BRAVE_APP.*--user-data-dir=$PROFILE_DIR" >/dev/null 2>&1; then
+  /bin/mkdir -p "$(/usr/bin/dirname "$LOG_FILE")"
+  /usr/bin/printf '%s Opening isolated browser: %s\n' "$(/bin/date -u +"%Y-%m-%dT%H:%M:%SZ")" "$TARGET_URL" >> "$LOG_FILE"
+  exec "$BRAVE_APP/Contents/MacOS/Brave Browser" \
+    --user-data-dir="$PROFILE_DIR" \
+    "$TARGET_URL" >/dev/null 2>&1 &
+  exit 0
+fi
+
+/bin/mkdir -p "$PROFILE_DIR/Default"
+/usr/bin/python3 - "$PROFILE_DIR" <<'PY'
+import json
+import pathlib
+import sys
+
+profile = pathlib.Path(sys.argv[1])
+
+
+def load(path):
+    try:
+        return json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"cannot read {path}: {exc}")
+
+
+def save(path, value):
+    path.write_text(json.dumps(value, separators=(",", ":")) + "\n")
+
+
+prefs_path = profile / "Default/Preferences"
+prefs = load(prefs_path)
+prefs.setdefault("intl", {})["accept_languages"] = "en-US,en"
+prefs["intl"]["selected_languages"] = "en-US,en"
+prefs.setdefault("profile", {}).setdefault("default_content_setting_values", {})["geolocation"] = 2
+prefs.setdefault("safebrowsing", {})["scout_reporting_enabled"] = False
+prefs.setdefault("alternate_error_pages", {})["enabled"] = False
+prefs["feedback_allowed"] = False
+brave = prefs.setdefault("brave", {})
+brave.setdefault("today", {})["opted_in"] = False
+brave.setdefault("rewards", {})["enabled"] = False
+brave.setdefault("brave_ads", {})["opted_in"] = False
+save(prefs_path, prefs)
+
+local_state_path = profile / "Local State"
+local_state = load(local_state_path)
+local_state.setdefault("user_experience_metrics", {})["reporting_enabled"] = False
+brave_state = local_state.setdefault("brave", {})
+brave_state.setdefault("p3a", {})["enabled"] = False
+brave_state.setdefault("stats", {})["reporting_enabled"] = False
+save(local_state_path, local_state)
+PY
+
+/bin/mkdir -p "$(/usr/bin/dirname "$LOG_FILE")"
+/usr/bin/printf '%s Opening isolated browser: %s\n' "$(/bin/date -u +"%Y-%m-%dT%H:%M:%SZ")" "$TARGET_URL" >> "$LOG_FILE"
+
+exec /usr/bin/open \
+  --env TZ=America/Los_Angeles \
+  --env LANG=en_US.UTF-8 \
+  --env LC_ALL=en_US.UTF-8 \
+  --env LANGUAGE=en_US:en \
+  -na "$BRAVE_APP" --args \
+  -AppleLanguages '(en-US)' \
+  -AppleLocale en_US \
+  --user-data-dir="$PROFILE_DIR" \
+  --proxy-server="socks5://127.0.0.1:$SOCKS_PORT" \
+  --host-resolver-rules="MAP * ~NOTFOUND , EXCLUDE 127.0.0.1" \
+  --lang=en-US \
+  --accept-lang=en-US,en \
+  --webrtc-ip-handling-policy=disable_non_proxied_udp \
+  --enforce-webrtc-ip-permission-check \
+  --no-first-run \
+  --no-default-browser-check \
+  --disable-sync \
+  --metrics-recording-only \
+  --disable-breakpad \
+  --disable-domain-reliability \
+  --no-pings \
+  --disable-features=BraveP3AEnabled \
+  "$TARGET_URL"

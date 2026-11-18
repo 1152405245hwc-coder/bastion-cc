@@ -1,0 +1,713 @@
+const $ = (id) => document.getElementById(id);
+
+const CONFIG_KEY = 'ccrf:web-config';
+const DRAFT_PREFIX = 'ccrf:web-draft:';
+const LAST_SESSION_KEY = 'ccrf:web-last-session';
+
+const state = {
+  base: '',
+  token: '',
+  totp: '',
+  session: '',
+  search: '',
+  sessionsCache: [],
+  lastPrompt: '',
+  cursor: 0,
+  transcriptCursor: 0,
+  generation: 0,
+  run: null,
+  streamController: null,
+  lastCompositionEndAt: null,
+};
+
+const api = async (path, options = {}) => {
+  const headers = {
+    ...(options.body ? { 'content-type': 'application/json' } : {}),
+    ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
+    ...(state.totp ? { 'x-ccrf-totp': state.totp } : {}),
+  };
+  const response = await fetch(`${state.base}${path}`, { ...options, headers });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.ok === false) {
+    throw new Error(body.error?.message || `HTTP ${response.status}`);
+  }
+  return body;
+};
+
+const showError = (error) => {
+  $('error').textContent = error instanceof Error ? error.message : String(error || '');
+};
+
+const showNotice = (message) => {
+  const box = $('notice');
+  if (!message) {
+    box.hidden = true;
+    box.textContent = '';
+    return;
+  }
+  box.hidden = false;
+  box.textContent = message;
+};
+
+const draftKey = (sessionId) => `${DRAFT_PREFIX}${sessionId}`;
+
+const saveDraft = () => {
+  if (!state.session) return;
+  try {
+    const value = $('prompt-input').value;
+    if (value) localStorage.setItem(draftKey(state.session), value);
+    else localStorage.removeItem(draftKey(state.session));
+  } catch {
+    // Ignore storage quota issues.
+  }
+};
+
+const restoreDraft = (sessionId) => {
+  try {
+    $('prompt-input').value = sessionId ? (localStorage.getItem(draftKey(sessionId)) || '') : '';
+  } catch {
+    $('prompt-input').value = '';
+  }
+};
+
+const saveConnectionProfile = () => {
+  try {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify({ base: state.base, lastProject: $('project-input').value.trim() }));
+  } catch {
+    // Ignore storage issues.
+  }
+};
+
+const setSessionControlsEnabled = (enabled) => {
+  for (const id of [
+    'delete-session', 'disconnect', 'reconnect', 'refresh', 'toggle-stream',
+    'start-run-btn', 'load-transcript', 'rename-toggle', 'fork-session', 'export-session',
+  ]) {
+    $(id).disabled = !enabled;
+  }
+};
+
+const refreshMetrics = async () => {
+  try {
+    const result = await api('/v1/metrics');
+    const metrics = result.data;
+    if (!metrics) return;
+    $('metrics-pill').textContent = `📊 会话 ${metrics.totalSessions} · 轮次 ${metrics.totalRuns} · ~${metrics.estimatedTokens} Tokens · 缓存命中 ${metrics.cacheHitRate ?? 0}%`;
+  } catch {
+    // Ignore metrics failures prior to connection.
+  }
+};
+
+const renderSession = (session) => {
+  $('active-session').textContent = session.title ? `${session.title} (${session.sessionId})` : session.sessionId;
+  $('active-project-tag').textContent = session.project ? `📁 ${session.project}` : '';
+  $('active-claude-tag').textContent = [
+    session.accountProfile ? `🏠 ${session.accountProfile}` : '',
+    session.providerSessionId ? `🔗 Claude续接:${session.providerSessionId.slice(0, 8)}` : '',
+  ].filter(Boolean).join(' ');
+  $('session-status').textContent = session.status;
+  $('generation').textContent = String(session.generation);
+  $('rename-title-input').value = session.title || '';
+  $('rename-project-input').value = session.project || '';
+  if (session.approvalMode) $('approval-mode').value = session.approvalMode;
+  if (session.reasoningEffort) $('reasoning-effort').value = session.reasoningEffort;
+  $('account-profile').value = session.accountProfile || '';
+  state.generation = session.generation;
+  if (session.currentRunId) {
+    state.run = {
+      runId: session.currentRunId,
+      status: session.currentRunStatus || state.run?.status || 'unknown',
+      leaseId: state.run?.runId === session.currentRunId ? state.run?.leaseId : undefined,
+    };
+  }
+  renderRunState();
+};
+
+const renderRunState = () => {
+  const run = state.run;
+  $('run-id').textContent = run ? `${run.runId} (${run.status})` : '无';
+  $('cancel').disabled = !run?.leaseId || ['completed', 'failed', 'cancelled', 'unknown'].includes(run.status);
+  $('approval-banner').hidden = !(run && run.status === 'awaiting_approval' && run.leaseId);
+};
+
+const appendEventItem = (event) => {
+  const item = document.createElement('li');
+  item.textContent = `${event.sequence}: ${event.type} (${event.createdAt})`;
+  $('events').append(item);
+  state.cursor = Math.max(state.cursor, event.sequence);
+};
+
+const refreshEvents = async () => {
+  if (!state.session) return;
+  const result = await api(`/v1/sessions/${encodeURIComponent(state.session)}/events?cursor=${state.cursor}`);
+  for (const event of result.data || []) {
+    appendEventItem(event);
+  }
+};
+
+const renderEmptyState = (title = '🚀 欢迎使用 BastionCC（棱堡）网页控制台') => {
+  const box = document.createElement('div');
+  box.id = 'empty-state';
+  box.className = 'empty-guide';
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  const list = document.createElement('ol');
+  for (const step of [
+    '右上角填入服务器地址与访问令牌点击 连接（本机同源访问自动连入）。',
+    '左侧填写项目并点击 + 新建，或展开多设备授权签发 6位配对码。',
+    '下方输入框支持 Enter 发送（中文输入法选词按 Enter 防误触）与 Shift+Enter 换行。',
+  ]) {
+    const li = document.createElement('li');
+    li.textContent = step;
+    list.append(li);
+  }
+  box.append(heading, list);
+  $('transcript-view').replaceChildren(box);
+};
+
+const loadTranscript = async (reset = false) => {
+  if (!state.session || !state.run?.runId) {
+    if (reset) renderEmptyState('💬 当前会话暂无对话记录');
+    return;
+  }
+  if (reset) {
+    state.transcriptCursor = 0;
+    $('transcript-view').replaceChildren();
+  }
+  const result = await api(
+    `/v1/sessions/${encodeURIComponent(state.session)}/runs/${encodeURIComponent(state.run.runId)}?cursor=${state.transcriptCursor}`,
+  );
+  const data = result.data;
+  if (!data) return;
+  state.run = { ...state.run, status: data.status };
+  renderRunState();
+  const chunks = data.chunks || [];
+  if (chunks.length > 0) $('empty-state')?.remove();
+  for (const chunk of chunks) {
+    const box = document.createElement('div');
+    box.className = `chunk ${chunk.role === 'prompt' ? 'prompt' : 'output'}`;
+    const head = document.createElement('div');
+    head.className = 'chunk-head';
+    head.textContent = chunk.role === 'prompt' ? `👤 指令 #${chunk.chunkIndex}` : `🤖 输出 #${chunk.chunkIndex}`;
+    const body = document.createElement('div');
+    body.className = 'chunk-body';
+    body.textContent = chunk.text;
+    box.append(head, body);
+    $('transcript-view').append(box);
+  }
+  if ($('transcript-view').children.length === 0) {
+    renderEmptyState('💬 当前会话暂无对话记录');
+  }
+  $('transcript-view').scrollTop = $('transcript-view').scrollHeight;
+  if (typeof data.nextCursor === 'number') {
+    state.transcriptCursor = data.nextCursor;
+  }
+};
+
+const renderSessionGroups = (sessions) => {
+  const container = $('session-groups');
+  container.replaceChildren();
+  const grouped = new Map();
+  for (const session of sessions || []) {
+    const groupName = session.project || '默认项目 (未分类)';
+    if (!grouped.has(groupName)) grouped.set(groupName, []);
+    grouped.get(groupName).push(session);
+  }
+  for (const [groupName, items] of grouped.entries()) {
+    const group = document.createElement('div');
+    group.className = 'project-group';
+    const heading = document.createElement('div');
+    heading.className = 'project-title';
+    heading.textContent = `📁 ${groupName} (${items.length})`;
+    group.append(heading);
+    const list = document.createElement('ul');
+    list.className = 'session-list';
+    for (const session of items) {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = session.sessionId === state.session ? 'active' : '';
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = session.title || session.sessionId;
+      const badge = document.createElement('span');
+      badge.className = 'session-badge';
+      badge.textContent = `${session.status} · ${session.runCount ?? 0}`;
+      btn.append(nameSpan, badge);
+      btn.addEventListener('click', () => selectSession(session.sessionId).catch(showError));
+      li.append(btn);
+      list.append(li);
+    }
+    group.append(list);
+    container.append(group);
+  }
+};
+
+const loadSessions = async () => {
+  const qs = state.search ? `?q=${encodeURIComponent(state.search)}` : '';
+  const result = await api(`/v1/sessions${qs}`);
+  state.sessionsCache = result.data || [];
+  renderSessionGroups(state.sessionsCache);
+  await refreshMetrics();
+};
+
+const loadDevices = async () => {
+  const result = await api('/v1/devices');
+  const list = $('device-list');
+  list.replaceChildren();
+  for (const device of result.data || []) {
+    const li = document.createElement('li');
+    li.className = 'device-item';
+    const label = document.createElement('span');
+    label.textContent = `${device.deviceId} (${device.scopes.join(',')})${device.revokedAt ? ' [已吊销]' : ''}`;
+    li.append(label);
+    if (!device.revokedAt) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'danger';
+      btn.textContent = '吊销';
+      btn.addEventListener('click', async () => {
+        try {
+          await api('/v1/devices/revoke', { method: 'POST', body: JSON.stringify({ deviceId: device.deviceId }) });
+          await loadDevices();
+        } catch (error) {
+          showError(error);
+        }
+      });
+      li.append(btn);
+    }
+    list.append(li);
+  }
+};
+
+const stopStream = () => {
+  if (state.streamController) {
+    state.streamController.abort();
+    state.streamController = null;
+    $('toggle-stream').textContent = 'SSE 实时';
+  }
+};
+
+const selectSession = async (sessionId) => {
+  stopStream();
+  showError('');
+  showNotice('');
+  saveDraft();
+  state.session = sessionId;
+  state.cursor = 0;
+  state.transcriptCursor = 0;
+  state.run = null;
+  try { localStorage.setItem(LAST_SESSION_KEY, sessionId); } catch {}
+  $('events').replaceChildren();
+  $('transcript-view').replaceChildren();
+  const detail = await api(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+  setSessionControlsEnabled(true);
+  renderSession(detail.data);
+  restoreDraft(sessionId);
+  await Promise.all([loadSessions(), refreshEvents(), loadTranscript(true)]);
+};
+
+const generateSessionId = () => {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `session-${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+};
+
+const connectAndLoad = async () => {
+  saveConnectionProfile();
+  await api('/health');
+  await Promise.all([loadSessions(), loadDevices()]);
+};
+
+const promptInput = $('prompt-input');
+promptInput.addEventListener('input', saveDraft);
+promptInput.addEventListener('compositionend', (event) => {
+  state.lastCompositionEndAt = event.timeStamp;
+});
+promptInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    if (
+      event.isComposing
+      || event.keyCode === 229
+      || (state.lastCompositionEndAt !== null && Math.abs(event.timeStamp - state.lastCompositionEndAt) < 50)
+    ) {
+      return;
+    }
+    if (!$('start-run-btn').disabled) {
+      $('run-form').requestSubmit();
+    }
+  }
+});
+
+$('session-search').addEventListener('input', (event) => {
+  state.search = event.currentTarget.value.trim();
+  loadSessions().catch(showError);
+});
+
+$('connect-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  showError('');
+  showNotice('');
+  const form = new FormData(event.currentTarget);
+  state.base = String(form.get('base') || location.origin).replace(/\/$/, '');
+  state.token = String(form.get('token') || '');
+  state.totp = String(form.get('totp') || '').trim();
+  try {
+    await connectAndLoad();
+    showNotice('已连接控制服务器');
+  } catch (error) {
+    showError(error);
+  }
+});
+
+$('reload-sessions').addEventListener('click', () => loadSessions().catch(showError));
+
+$('new-session-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  showError('');
+  showNotice('');
+  const rawInput = $('session-input').value.trim();
+  const project = $('project-input').value.trim();
+  const looksLikeId = /^[A-Za-z0-9._-]+$/.test(rawInput);
+  const sessionId = rawInput && looksLikeId ? rawInput : generateSessionId();
+  const title = rawInput && !looksLikeId ? rawInput : (rawInput || `对话 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`);
+  try {
+    try {
+      await api('/v1/sessions/create', {
+        method: 'POST',
+        body: JSON.stringify({
+          sessionId,
+          title,
+          ...(project ? { project } : {}),
+          approvalMode: $('approval-mode').value,
+          reasoningEffort: $('reasoning-effort').value,
+          ...($('account-profile').value ? { accountProfile: $('account-profile').value } : {}),
+        }),
+      });
+    } catch (error) {
+      if (!String(error.message).includes('conflicts')) throw error;
+    }
+    saveConnectionProfile();
+    $('session-input').value = '';
+    await selectSession(sessionId);
+  } catch (error) {
+    showError(error);
+  }
+});
+
+$('rename-toggle').addEventListener('click', () => {
+  $('rename-bar').hidden = !$('rename-bar').hidden;
+});
+
+$('rename-cancel').addEventListener('click', () => {
+  $('rename-bar').hidden = true;
+});
+
+$('rename-bar').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!state.session) return;
+  try {
+    await api(`/v1/sessions/${encodeURIComponent(state.session)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        title: $('rename-title-input').value.trim(),
+        project: $('rename-project-input').value.trim(),
+      }),
+    });
+    $('rename-bar').hidden = true;
+    await selectSession(state.session);
+  } catch (error) {
+    showError(error);
+  }
+});
+
+for (const id of ['approval-mode', 'reasoning-effort', 'account-profile']) {
+  $(id).addEventListener('change', async () => {
+    if (!state.session) return;
+    try {
+      await api(`/v1/sessions/${encodeURIComponent(state.session)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          approvalMode: $('approval-mode').value,
+          reasoningEffort: $('reasoning-effort').value,
+          accountProfile: $('account-profile').value,
+        }),
+      });
+      await selectSession(state.session);
+    } catch (error) {
+      showError(error);
+    }
+  });
+}
+
+$('fork-session').addEventListener('click', async () => {
+  if (!state.session) return;
+  showError('');
+  const newSessionId = `${state.session}-fork-${Date.now().toString(36)}`.slice(0, 180);
+  try {
+    await api(`/v1/sessions/${encodeURIComponent(state.session)}/fork`, {
+      method: 'POST',
+      body: JSON.stringify({ newSessionId }),
+    });
+    await selectSession(newSessionId);
+    showNotice(`已从 ${state.session} 分叉出 ${newSessionId}`);
+  } catch (error) {
+    showError(error);
+  }
+});
+
+$('export-session').addEventListener('click', async () => {
+  if (!state.session) return;
+  showError('');
+  try {
+    const res = await api(`/v1/sessions/${encodeURIComponent(state.session)}/export?format=markdown`);
+    const markdown = res.data?.markdown || JSON.stringify(res.data, null, 2);
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${state.session}.md`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showNotice(`已导出 ${state.session}.md`);
+  } catch (error) {
+    showError(error);
+  }
+});
+
+$('delete-session').addEventListener('click', async () => {
+  if (!state.session) return;
+  try {
+    stopStream();
+    await api(`/v1/sessions/${encodeURIComponent(state.session)}`, { method: 'DELETE' });
+    try { localStorage.removeItem(draftKey(state.session)); } catch {}
+    state.session = '';
+    state.run = null;
+    setSessionControlsEnabled(false);
+    $('active-session').textContent = '未选择';
+    $('active-project-tag').textContent = '';
+    $('active-claude-tag').textContent = '';
+    $('session-status').textContent = '未连接';
+    $('generation').textContent = '-';
+    $('prompt-input').value = '';
+    $('events').replaceChildren();
+    renderEmptyState();
+    renderRunState();
+    await loadSessions();
+  } catch (error) {
+    showError(error);
+  }
+});
+
+$('compact-sessions').addEventListener('click', async () => {
+  try {
+    const res = await api('/v1/sessions/compact', { method: 'POST', body: JSON.stringify({ keepLatestRunsPerSession: 5 }) });
+    showNotice(`历史压缩完成，清理分片 ${res.data?.prunedChunks ?? 0} 条`);
+  } catch (error) {
+    showError(error);
+  }
+});
+
+$('enroll-device-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  showError('');
+  const form = new FormData(event.currentTarget);
+  const deviceId = String(form.get('deviceId') || '').trim();
+  const label = String(form.get('label') || '').trim();
+  const scopes = String(form.get('scopes') || '').split(',').map((s) => s.trim()).filter(Boolean);
+  try {
+    const res = await api('/v1/devices/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ deviceId, label, scopes }),
+    });
+    const box = $('enrolled-credential');
+    box.hidden = false;
+    box.textContent = `设备 ${deviceId} 凭据: ${res.data.credential}`;
+    await loadDevices();
+  } catch (error) {
+    showError(error);
+  }
+});
+
+$('pair-code-btn').addEventListener('click', async () => {
+  showError('');
+  const form = new FormData($('enroll-device-form'));
+  const deviceId = String(form.get('deviceId') || '').trim() || `dev-${Date.now().toString(36)}`;
+  const label = String(form.get('label') || '').trim() || 'Mobile / CLI';
+  const scopes = String(form.get('scopes') || 'control,read').split(',').map((s) => s.trim()).filter(Boolean);
+  try {
+    const res = await api('/v1/devices/pair-code', {
+      method: 'POST',
+      body: JSON.stringify({ deviceId, label, scopes }),
+    });
+    const box = $('enrolled-credential');
+    box.hidden = false;
+    box.textContent = `6位配对码 (${deviceId}): ${res.data.code}（5分钟内单次有效）`;
+  } catch (error) {
+    showError(error);
+  }
+});
+
+const submitPrompt = async (promptText) => {
+  showError('');
+  showNotice('');
+  state.lastPrompt = promptText;
+  $('retry-last').hidden = true;
+  const execute = $('run-form').elements.execute.checked;
+  const approvalMode = $('approval-mode').value;
+  const reasoningEffort = $('reasoning-effort').value;
+  try {
+    const result = await api(`/v1/sessions/${encodeURIComponent(state.session)}/runs`, {
+      method: 'POST',
+      body: JSON.stringify({
+        requestId: crypto.randomUUID(),
+        generation: state.generation,
+        idempotencyKey: crypto.randomUUID(),
+        prompt: promptText,
+        execute,
+        approvalMode,
+        reasoningEffort,
+      }),
+    });
+    state.run = result.data;
+    state.transcriptCursor = 0;
+    $('prompt-input').value = '';
+    saveDraft();
+    const [, , , detail] = await Promise.all([
+      refreshEvents(),
+      loadTranscript(true),
+      loadSessions(),
+      api(`/v1/sessions/${encodeURIComponent(state.session)}`),
+    ]);
+    if (detail?.data) renderSession(detail.data);
+  } catch (error) {
+    $('retry-last').hidden = false;
+    showError(error);
+  }
+};
+
+$('run-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const prompt = $('prompt-input').value;
+  if (!prompt.trim()) return;
+  await submitPrompt(prompt);
+});
+
+$('retry-last').addEventListener('click', async () => {
+  if (!state.lastPrompt || !state.session) return;
+  await submitPrompt(state.lastPrompt);
+});
+
+$('load-transcript').addEventListener('click', () => loadTranscript(false).catch(showError));
+
+$('cancel').addEventListener('click', async () => {
+  if (!state.run?.leaseId) return;
+  try {
+    const res = await api(`/v1/sessions/${encodeURIComponent(state.session)}/runs/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ runId: state.run.runId, leaseId: state.run.leaseId }),
+    });
+    state.run = res.data;
+    renderRunState();
+    await refreshEvents();
+  } catch (error) {
+    showError(error);
+  }
+});
+
+for (const [id, approved] of [['approve-yes', true], ['approve-no', false]]) {
+  $(id).addEventListener('click', async () => {
+    if (!state.run?.leaseId) return;
+    try {
+      const res = await api(`/v1/sessions/${encodeURIComponent(state.session)}/runs/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ runId: state.run.runId, leaseId: state.run.leaseId, approved }),
+      });
+      state.run = res.data;
+      renderRunState();
+      await refreshEvents();
+    } catch (error) {
+      showError(error);
+    }
+  });
+}
+
+for (const [id, action] of [['disconnect', 'disconnect'], ['reconnect', 'reconnect']]) {
+  $(id).addEventListener('click', async () => {
+    try {
+      const res = await api(`/v1/sessions/${encodeURIComponent(state.session)}/${action}`, { method: 'POST' });
+      renderSession(res.data);
+      await Promise.all([refreshEvents(), loadSessions()]);
+    } catch (error) {
+      showError(error);
+    }
+  });
+}
+
+$('refresh').addEventListener('click', () => Promise.all([refreshEvents(), loadTranscript(false)]).catch(showError));
+
+$('toggle-stream').addEventListener('click', async () => {
+  if (state.streamController) {
+    stopStream();
+    return;
+  }
+  if (!state.session) return;
+  const controller = new AbortController();
+  state.streamController = controller;
+  $('toggle-stream').textContent = '停止 SSE';
+  try {
+    const headers = {
+      accept: 'text/event-stream',
+      ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
+      ...(state.totp ? { 'x-ccrf-totp': state.totp } : {}),
+    };
+    const response = await fetch(
+      `${state.base}/v1/sessions/${encodeURIComponent(state.session)}/stream?cursor=${state.cursor}`,
+      { headers, signal: controller.signal },
+    );
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() ?? '';
+      for (const block of blocks) {
+        const dataLine = block.split('\n').find((line) => line.startsWith('data: '));
+        if (!dataLine) continue;
+        appendEventItem(JSON.parse(dataLine.slice(6)));
+      }
+    }
+  } catch (error) {
+    if (error.name !== 'AbortError') showError(error);
+  } finally {
+    if (state.streamController === controller) stopStream();
+  }
+});
+
+window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}');
+    if (typeof saved.base === 'string') {
+      state.base = saved.base;
+      $('connect-base').value = saved.base;
+    } else if (location.origin && location.origin !== 'null') {
+      state.base = location.origin;
+    }
+    if (typeof saved.lastProject === 'string') {
+      $('project-input').value = saved.lastProject;
+    }
+    await connectAndLoad();
+    const lastSession = localStorage.getItem(LAST_SESSION_KEY);
+    if (lastSession && state.sessionsCache.some((s) => s.sessionId === lastSession)) {
+      await selectSession(lastSession);
+    }
+  } catch {
+    // Wait for explicit credentials if token is required.
+  }
+});

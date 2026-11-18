@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the CC Relay Forge safe reboot gate daily
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 Asia/Shanghai
+Persistent=false
+Unit=safe-reboot.service
+
+[Install]
+WantedBy=timers.target

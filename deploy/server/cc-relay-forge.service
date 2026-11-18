@@ -1,0 +1,22 @@
+[Unit]
+Description=CC Relay Forge Control Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+WorkingDirectory=/opt/cc-relay-forge
+EnvironmentFile=/etc/cc-relay-forge/server.env
+ExecStart=/usr/bin/node /opt/cc-relay-forge/scripts/start-server.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/cc-relay-forge
+
+[Install]
+WantedBy=multi-user.target

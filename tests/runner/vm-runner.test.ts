@@ -1,0 +1,14 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { buildVmLaunchPlan, buildVmSnapshotPlan, buildVmDestroyPlan, type VmImage, type VmCommand } from "../../runner/vm/index.ts";
+import { createCapabilityToken } from "../../runner/local/index.ts";
+const workspace = mkdtempSync(join("/tmp", "cc-vm-"));
+const image: VmImage = { ref: "registry.example/runner", digest: `sha256:${"a".repeat(64)}`, signature: "sig-1", signer: "release-key" };
+const token = createCapabilityToken({ runnerId: "runner-a", audience: "vm-runner", scope: { workspaceRoots: [workspace], commands: ["echo"], network: "none", networkTargets: [], approval: false, credentialRefs: [] } });
+const command: VmCommand = { commandId: "c1", sessionId: token.sessionId, runId: "r1", generation: 0, command: "echo", args: ["ok"], cwd: workspace, workspace };
+test("builds an unsupported, default-deny VM launch plan without starting a VM", () => { const plan = buildVmLaunchPlan(command, image, token, { runnerId: "runner-a", deviceId: token.deviceId }); assert.equal(plan.status, "unsupported"); assert.equal(plan.network, "default-deny"); assert.deepEqual(plan.steps, ["verify-image-signature", "create-ephemeral-vm", "apply-default-deny-network", "bind-capability", "launch-command"]); });
+test("requires signed immutable image digest", () => { assert.throws(() => buildVmLaunchPlan(command, { ...image, digest: "latest" }, token, { runnerId: "runner-a", deviceId: token.deviceId }), /sha256/); });
+test("rejects network-enabled capability and mismatched binding", () => { assert.throws(() => buildVmLaunchPlan(command, image, { ...token, scope: { ...token.scope, network: "any" } }, { runnerId: "runner-a", deviceId: token.deviceId }), /network=none/); assert.throws(() => buildVmSnapshotPlan("other", image, token, "s1"), /binding mismatch/); });
+test("snapshot and destroy are plans only", () => { assert.equal(buildVmSnapshotPlan("runner-a", image, token, "s1").status, "unsupported"); assert.deepEqual(buildVmDestroyPlan("runner-a", image, token).steps, ["stop-vm", "destroy-vm", "delete-ephemeral-disk"]); });

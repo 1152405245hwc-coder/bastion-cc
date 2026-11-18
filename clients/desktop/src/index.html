@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' http: https:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BastionCC 棱堡 · 桌面工作台</title>
+  <style>
+    :root {
+      --bg-canvas-light: #f1f5f9;
+      --bg-canvas-dark: #0b1120;
+      --bg-panel-light: #ffffff;
+      --bg-panel-dark: #111827;
+      --bg-subtle-light: #f8fafc;
+      --bg-subtle-dark: #1e293b;
+      --bg-hover-light: #e2e8f0;
+      --bg-hover-dark: #334155;
+      --text-main-light: #0f172a;
+      --text-main-dark: #f1f5f9;
+      --text-muted-light: #475569;
+      --text-muted-dark: #94a3b8;
+      --border-light: #dbe2ea;
+      --border-dark: #283548;
+      --brand-light: #1d4ed8;
+      --brand-dark: #60a5fa;
+      --brand-text-light: #ffffff;
+      --brand-text-dark: #082f49;
+      --brand-soft-light: #e0ecff;
+      --brand-soft-dark: #172554;
+      --emerald-light: #0f766e;
+      --emerald-dark: #2dd4bf;
+      --emerald-text-light: #ffffff;
+      --emerald-text-dark: #042f2e;
+      --danger-light: #b91c1c;
+      --danger-dark: #f87171;
+      --danger-text-light: #ffffff;
+      --danger-text-dark: #450a0a;
+      --amber-bg-light: #fef3c7;
+      --amber-bg-dark: #451a03;
+      --amber-border-light: #f59e0b;
+      --amber-border-dark: #d97706;
+      --scroll-track-light: #e2e8f0;
+      --scroll-track-dark: #0f172a;
+      --scroll-thumb-light: #64748b;
+      --scroll-thumb-dark: #64748b;
+
+      --bg-canvas: var(--bg-canvas-light);
+      --bg-panel: var(--bg-panel-light);
+      --bg-subtle: var(--bg-subtle-light);
+      --bg-hover: var(--bg-hover-light);
+      --text-main: var(--text-main-light);
+      --text-muted: var(--text-muted-light);
+      --border: var(--border-light);
+      --brand: var(--brand-light);
+      --brand-text: var(--brand-text-light);
+      --brand-soft: var(--brand-soft-light);
+      --emerald: var(--emerald-light);
+      --emerald-text: var(--emerald-text-light);
+      --danger: var(--danger-light);
+      --danger-text: var(--danger-text-light);
+      --amber-bg: var(--amber-bg-light);
+      --amber-border: var(--amber-border-light);
+      --scrollbar-track: var(--scroll-track-light);
+      --scrollbar-thumb: var(--scroll-thumb-light);
+
+      @media (prefers-color-scheme: dark) {
+        --bg-canvas: var(--bg-canvas-dark);
+        --bg-panel: var(--bg-panel-dark);
+        --bg-subtle: var(--bg-subtle-dark);
+        --bg-hover: var(--bg-hover-dark);
+        --text-main: var(--text-main-dark);
+        --text-muted: var(--text-muted-dark);
+        --border: var(--border-dark);
+        --brand: var(--brand-dark);
+        --brand-text: var(--brand-text-dark);
+        --brand-soft: var(--brand-soft-dark);
+        --emerald: var(--emerald-dark);
+        --emerald-text: var(--emerald-text-dark);
+        --danger: var(--danger-dark);
+        --danger-text: var(--danger-text-dark);
+        --amber-bg: var(--amber-bg-dark);
+        --amber-border: var(--amber-border-dark);
+        --scrollbar-track: var(--scroll-track-dark);
+        --scrollbar-thumb: var(--scroll-thumb-dark);
+      }
+
+      @supports (color: light-dark(white, black)) {
+        --bg-canvas: light-dark(var(--bg-canvas-light), var(--bg-canvas-dark));
+        --bg-panel: light-dark(var(--bg-panel-light), var(--bg-panel-dark));
+        --bg-subtle: light-dark(var(--bg-subtle-light), var(--bg-subtle-dark));
+        --bg-hover: light-dark(var(--bg-hover-light), var(--bg-hover-dark));
+        --text-main: light-dark(var(--text-main-light), var(--text-main-dark));
+        --text-muted: light-dark(var(--text-muted-light), var(--text-muted-dark));
+        --border: light-dark(var(--border-light), var(--border-dark));
+        --brand: light-dark(var(--brand-light), var(--brand-dark));
+        --brand-text: light-dark(var(--brand-text-light), var(--brand-text-dark));
+        --brand-soft: light-dark(var(--brand-soft-light), var(--brand-soft-dark));
+        --emerald: light-dark(var(--emerald-light), var(--emerald-dark));
+        --emerald-text: light-dark(var(--emerald-text-light), var(--emerald-text-dark));
+        --danger: light-dark(var(--danger-light), var(--danger-dark));
+        --danger-text: light-dark(var(--danger-text-light), var(--danger-text-dark));
+        --amber-bg: light-dark(var(--amber-bg-light), var(--amber-bg-dark));
+        --amber-border: light-dark(var(--amber-border-light), var(--amber-border-dark));
+        --scrollbar-track: light-dark(var(--scroll-track-light), var(--scroll-track-dark));
+        --scrollbar-thumb: light-dark(var(--scroll-thumb-light), var(--scroll-thumb-dark));
+      }
+
+      color-scheme: light dark;
+      font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+      color: var(--text-main);
+      background: var(--bg-canvas);
+      scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+    }
+
+    html {
+      accent-color: var(--brand);
+    }
+
+    @supports not (scrollbar-color: auto) {
+      * { scrollbar-width: auto; }
+      *::-webkit-scrollbar { width: 10px; height: 10px; }
+      *::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
+      *::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-canvas);
+      color: var(--text-main);
+    }
+
+    header.topbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: .65rem 1rem;
+      padding: .75rem 1.15rem;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+    .brand-title { font-weight: 700; font-size: 1rem; letter-spacing: -.01em; }
+    .metrics-pill {
+      font-size: .78rem;
+      color: var(--text-muted);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: .2rem .7rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .top-actions { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; }
+
+    .connect-drawer { width: 100%; border-top: 1px dashed var(--border); padding-top: .5rem; }
+    .connect-drawer summary {
+      cursor: pointer;
+      font-size: .82rem;
+      color: var(--text-muted);
+      user-select: none;
+    }
+    .connect-drawer form { margin-top: .45rem; }
+
+    main.shell {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 300px minmax(420px, 1fr);
+      gap: .9rem;
+      padding: .9rem;
+    }
+
+    @media (max-width: 860px) {
+      main.shell { grid-template-columns: 1fr; }
+      body { height: auto; min-height: 100vh; }
+    }
+
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: .85rem;
+      display: flex;
+      flex-direction: column;
+      gap: .65rem;
+      min-height: 0;
+    }
+
+    .row { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; }
+    .col { display: grid; gap: .45rem; }
+
+    input, textarea, select, button {
+      font: inherit;
+      padding: .42rem .65rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-subtle);
+      color: var(--text-main);
+      transition: border-color .15s ease, background-color .15s ease;
+    }
+
+    input:focus, textarea:focus, select:focus {
+      outline: 2px solid var(--brand);
+      outline-offset: -1px;
+    }
+
+    button {
+      cursor: pointer;
+      background: var(--brand);
+      color: var(--brand-text);
+      border-color: var(--brand);
+      font-weight: 500;
+    }
+    button:hover:not(:disabled) { filter: brightness(1.06); }
+    button.secondary { background: var(--bg-subtle); color: var(--text-main); border-color: var(--border); }
+    button.secondary:hover:not(:disabled) { background: var(--bg-hover); }
+    button.active-toggle { background: var(--emerald); border-color: var(--emerald); color: var(--emerald-text); }
+    button.danger { background: var(--danger); border-color: var(--danger); color: var(--danger-text); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.compact { padding: .3rem .55rem; font-size: .84rem; }
+
+    .create-card {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: .55rem;
+    }
+
+    .project-group { display: grid; gap: .28rem; margin-bottom: .6rem; }
+    .project-title {
+      font-size: .76rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      padding: .22rem .45rem;
+      background: var(--bg-subtle);
+      border-radius: 6px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    ul { list-style: none; padding: 0; margin: 0; display: grid; gap: .28rem; }
+    .session-btn {
+      width: 100%;
+      text-align: left;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: .4rem;
+      padding: .45rem .6rem;
+    }
+    .session-btn.selected {
+      background: var(--brand-soft);
+      border-color: var(--brand);
+      color: var(--text-main);
+      font-weight: 600;
+    }
+    .session-badge { font-size: .74rem; color: var(--text-muted); white-space: nowrap; }
+
+    .workspace-header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: .5rem;
+      padding-bottom: .55rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .session-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; font-size: .9rem; }
+    .tag-chip {
+      font-size: .75rem;
+      color: var(--text-muted);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      padding: .12rem .5rem;
+      border-radius: 999px;
+    }
+
+    .inline-edit {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .4rem;
+      align-items: center;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      padding: .5rem;
+      border-radius: 10px;
+    }
+    .inline-edit input { flex: 1; min-width: 120px; }
+
+    .approval-banner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: .6rem;
+      padding: .6rem .85rem;
+      border-radius: 10px;
+      background: var(--amber-bg);
+      border: 1px solid var(--amber-border);
+    }
+
+    .transcript {
+      flex: 1;
+      min-height: 220px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: .85rem;
+      background: var(--bg-subtle);
+      display: flex;
+      flex-direction: column;
+      gap: .75rem;
+    }
+
+    .empty-guide {
+      margin: auto;
+      max-width: 520px;
+      background: var(--bg-panel);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      padding: 1.15rem 1.25rem;
+      display: grid;
+      gap: .5rem;
+    }
+    .empty-guide h3 { margin: 0; font-size: 1rem; }
+    .empty-guide ol { margin: 0; padding-left: 1.2rem; display: grid; gap: .35rem; color: var(--text-muted); font-size: .88rem; }
+
+    .chunk {
+      border-radius: 10px;
+      padding: .65rem .8rem;
+      border: 1px solid var(--border);
+      display: grid;
+      gap: .3rem;
+    }
+    .chunk.prompt {
+      background: var(--brand-soft);
+      border-color: var(--brand);
+      align-self: flex-end;
+      max-width: 92%;
+    }
+    .chunk.output {
+      background: var(--bg-panel);
+      align-self: stretch;
+    }
+    .chunk-head { font-size: .74rem; font-weight: 600; color: var(--text-muted); }
+    .chunk-body { white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
+
+    .composer-card {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: .65rem;
+      display: grid;
+      gap: .55rem;
+    }
+
+    #prompt-input {
+      field-sizing: content;
+      height: auto;
+      width: 100%;
+      min-block-size: 3lh;
+      max-block-size: 10lh;
+      resize: vertical;
+      background: var(--bg-panel);
+    }
+
+    .composer-controls select {
+      field-sizing: content;
+      max-inline-size: 28ch;
+      padding: .3rem .5rem;
+      font-size: .84rem;
+    }
+    .composer-controls label { font-size: .8rem; color: var(--text-muted); display: inline-flex; align-items: center; gap: .3rem; }
+
+    .notice { color: var(--emerald); font-size: .85rem; margin: 0; }
+    #error { color: var(--danger); margin: 0; white-space: pre-wrap; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-title">BastionCC · 棱堡</span>
+      <span id="metrics-pill" class="metrics-pill">📊 会话 0 · 轮次 0 · ~0 Tokens · 缓存命中 0%</span>
+    </div>
+    <div class="top-actions">
+      <button id="toggle-local-server" type="button" class="secondary compact">⚡ 一键本地服务</button>
+      <button id="toggle-local-runner" type="button" class="secondary compact">🏃 本机执行器</button>
+      <button id="pair-code-btn" type="button" class="secondary compact">📱 生成6位配对码</button>
+      <button id="oauth-login" type="button" class="secondary compact">🔐 Claude 隔离登录</button>
+    </div>
+    <details id="connect-drawer" class="connect-drawer">
+      <summary>远程 VPS 连接设置（服务器地址 / 令牌 / TOTP）</summary>
+      <form id="connect-form" class="row">
+        <input name="baseUrl" id="base-url-input" value="http://127.0.0.1:8787" placeholder="服务器地址 (如 http://127.0.0.1:8787)" style="flex:1;min-width:220px">
+        <input name="authToken" id="auth-token-input" type="password" autocomplete="off" placeholder="访问令牌 (本机可选)" style="flex:1;min-width:160px">
+        <input name="totp" inputmode="numeric" maxlength="6" placeholder="TOTP" style="width:86px">
+        <button type="submit" class="compact">连接</button>
+      </form>
+    </details>
+  </header>
+
+  <main class="shell">
+    <aside class="panel">
+      <div class="row" style="justify-content:space-between">
+        <strong>项目与会话</strong>
+        <button id="reload-sessions" type="button" class="secondary compact">刷新</button>
+      </div>
+      <input id="session-search" type="search" placeholder="🔍 搜索会话 / 项目...">
+      <form id="create-session-form" class="col create-card">
+        <div class="row">
+          <input name="project" id="project-input" placeholder="所属项目目录 (可选)" style="flex:1;min-width:0">
+          <button id="pick-folder" type="button" class="secondary compact">📁 选目录</button>
+        </div>
+        <div class="row">
+          <input name="sessionId" id="new-session-input" placeholder="会话名 / ID (留空自动生成)" style="flex:1;min-width:0">
+          <button type="submit" class="compact">+ 新建</button>
+        </div>
+      </form>
+      <div id="session-groups" style="overflow-y:auto;flex:1"></div>
+      <div class="row">
+        <button id="delete-session" type="button" class="danger compact" disabled>🗑️ 删除</button>
+        <button id="compact-sessions" type="button" class="secondary compact">🧹 压缩历史</button>
+      </div>
+    </aside>
+
+    <section class="panel">
+      <div class="workspace-header">
+        <div class="session-meta">
+          <strong id="active-session">未选择会话</strong>
+          <span id="active-project-tag" class="tag-chip" hidden></span>
+          <span id="active-claude-tag" class="tag-chip" hidden></span>
+          <span class="tag-chip"><span id="session-status">未连接</span> · Gen <span id="generation">-</span></span>
+        </div>
+        <div class="row">
+          <button id="rename-toggle" type="button" class="secondary compact" disabled>✏️ 重命名</button>
+          <button id="fork-session" type="button" class="secondary compact" disabled>🌿 分叉</button>
+          <button id="export-session" type="button" class="secondary compact" disabled>📥 导出</button>
+          <button id="cancel" type="button" class="secondary compact" disabled>取消运行</button>
+          <button id="disconnect" type="button" class="secondary compact" disabled>断开</button>
+          <button id="reconnect" type="button" class="secondary compact" disabled>重连</button>
+        </div>
+      </div>
+
+      <form id="rename-bar" class="inline-edit" hidden>
+        <input id="rename-title-input" placeholder="会话标题">
+        <input id="rename-project-input" placeholder="所属项目">
+        <button type="submit" class="compact">保存</button>
+        <button id="rename-cancel" type="button" class="secondary compact">取消</button>
+      </form>
+
+      <div id="approval-banner" class="approval-banner" hidden>
+        <span>当前任务等待高危操作确认，请批准或拒绝：</span>
+        <div class="row">
+          <button id="approve-yes" type="button" class="compact" disabled>批准继续</button>
+          <button id="approve-no" type="button" class="danger compact" disabled>拒绝取消</button>
+        </div>
+      </div>
+
+      <div id="transcript" class="transcript">
+        <div id="empty-state" class="empty-guide">
+          <h3>🚀 欢迎使用 BastionCC（棱堡）桌面工作台</h3>
+          <ol>
+            <li>点击上方 <strong>⚡ 一键本地服务</strong> 快速体验，或展开 <strong>远程 VPS 连接设置</strong> 连入美西服务器。</li>
+            <li>左侧选择项目目录并点击 <strong>+ 新建</strong> 创建会话（自动关联服务器原生 `claude --resume` 上下文）。</li>
+            <li>在下方输入指令，按 <strong>Enter 发送</strong>（支持中文输入法防误触），<strong>Shift + Enter 换行</strong>。</li>
+          </ol>
+        </div>
+      </div>
+
+      <form id="run-form" class="composer-card">
+        <label for="prompt-input" class="sr-only">任务指令</label>
+        <textarea id="prompt-input" name="prompt" placeholder="输入任务指令（Enter 发送 · Shift+Enter 换行 · 自动按会话保存草稿）" required></textarea>
+        <div class="row" style="justify-content:space-between">
+          <div class="row composer-controls">
+            <label>审批
+              <select id="approval-mode" name="approvalMode">
+                <option value="manual">手动审批</option>
+                <option value="auto-edit">自动改文件</option>
+                <option value="plan-only">仅生成计划</option>
+              </select>
+            </label>
+            <label>推理
+              <select id="reasoning-effort" name="reasoningEffort">
+                <option value="low">低 (快速)</option>
+                <option value="medium" selected>中 (标准)</option>
+                <option value="high">高 (深度)</option>
+                <option value="max">极限</option>
+              </select>
+            </label>
+            <label>账号仓
+              <select id="account-profile" name="accountProfile">
+                <option value="">默认账号</option>
+                <option value="pro-1">pro-1</option>
+                <option value="pro-2">pro-2</option>
+              </select>
+            </label>
+            <label><input type="checkbox" name="execute" checked> 直接执行</label>
+          </div>
+          <div class="row">
+            <button id="retry-last" type="button" class="secondary compact" hidden>🔄 重发上一条</button>
+            <button id="start-run" type="submit" disabled>发送执行</button>
+          </div>
+        </div>
+      </form>
+      <p id="notice" class="notice" hidden></p>
+      <pre id="error" role="alert"></pre>
+    </section>
+  </main>
+  <script type="module" src="./renderer.js"></script>
+</body>
+</html>

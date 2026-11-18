@@ -1,0 +1,8 @@
+[Unit]
+Description=CC Relay Forge safe scheduled reboot gate
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/safe-scheduled-reboot.sh

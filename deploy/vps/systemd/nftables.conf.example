@@ -1,0 +1,21 @@
+#!/usr/sbin/nft -f
+
+# Replace SSH_PORT and SERVICE_PORT before installation.
+# Keep this as a named table. Do not add "flush ruleset".
+table inet ccrf_fw {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iifname "lo" accept
+    ct state established,related accept
+    ip protocol icmp accept
+    ip6 nexthdr icmpv6 accept
+    tcp dport { SSH_PORT, SERVICE_PORT } accept
+  }
+
+  chain forward {
+    type filter hook forward priority -10; policy accept;
+    ct state established,related accept
+    iifname { "docker0", "br-*" } accept
+    oifname { "docker0", "br-*" } tcp dport SERVICE_PORT accept
+  }
+}

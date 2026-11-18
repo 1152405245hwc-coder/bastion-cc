@@ -1,0 +1,25 @@
+{
+  "name": "cc-relay-forge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "core/*",
+    "server/*",
+    "runner/*",
+    "clients/*",
+    "compat/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test",
+    "check": "npm run runtime-check && npm test",
+    "runtime-check": "node scripts/runtime-check.mjs",
+    "start:server": "node scripts/start-server.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
