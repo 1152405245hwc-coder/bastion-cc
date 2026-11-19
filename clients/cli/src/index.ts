@@ -2,6 +2,7 @@ import { ControlPlane } from "../../../server/control/src/index.ts";
 import type { RunState } from "../../../server/control/src/index.ts";
 import type { Envelope } from "../../../core/protocol/src/index.ts";
 import { randomUUID } from "node:crypto";
+import { createInterface } from "node:readline/promises";
 import { CliTransportError, HttpCliClient } from "./http-client.ts";
 
 export interface CliResult {
@@ -259,17 +260,105 @@ export async function runCliRemote(argv: readonly string[], client: HttpCliClien
   }
 }
 
+function usageText(): string {
+  return [
+    "BastionCC (cc-relay-forge) CLI",
+    "",
+    "Usage:",
+    "  bastioncc [--url URL] [--json] <command> [...args]",
+    "",
+    "Remote Commands (set --url or CCRF_BASE_URL / BASTIONCC_BASE_URL):",
+    "  chat <sessionId> <prompt> [--project DIR] [--account SLOT] [--mode MODE] [--effort LEVEL]",
+    "  repl <sessionId> [--project DIR] [--account SLOT] [--mode MODE] [--effort LEVEL]",
+    "  pair <6-digit-code>",
+    "  session list|create|get|delete|compact",
+    "  device list|enroll|revoke",
+    "  run start|transcript, resume, cancel, approve, disconnect, reconnect",
+    "",
+  ].join("\n");
+}
+
+async function runRepl(sessionId: string, flags: readonly string[], client: HttpCliClient): Promise<void> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  process.stderr.write(`[bastioncc] interactive REPL attached to session=${sessionId}. Commands: /status, /metrics, /exit\n`);
+  try {
+    while (true) {
+      let line: string;
+      try {
+        line = await rl.question(`${sessionId}> `);
+      } catch {
+        break;
+      }
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed === "/exit" || trimmed === "/quit") break;
+      if (trimmed === "/status") {
+        const res = await runCliRemote(["session", "get", sessionId], client);
+        process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
+        continue;
+      }
+      if (trimmed === "/metrics") {
+        const metrics = await client.getMetrics();
+        process.stdout.write(`${JSON.stringify(metrics, null, 2)}\n`);
+        continue;
+      }
+      const res = await runCliRemote(["chat", sessionId, trimmed, ...flags], client);
+      if (res.ok && res.data && typeof res.data === "object") {
+        const chatData = res.data as { runId?: string; status?: string; providerSessionId?: string; output?: string };
+        process.stdout.write(`${chatData.output ?? ""}\n`);
+        process.stderr.write(
+          `[bastioncc] run=${chatData.runId ?? ""} status=${chatData.status ?? ""}${chatData.providerSessionId ? ` resume=${chatData.providerSessionId}` : ""}\n`,
+        );
+      } else {
+        process.stderr.write(`[bastioncc] error ${res.error?.code ?? "UNKNOWN"}: ${res.error?.message ?? "failed"}\n`);
+      }
+    }
+  } finally {
+    rl.close();
+  }
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const urlIndex = argv.indexOf("--url");
-  const baseUrl = urlIndex >= 0 ? argv[urlIndex + 1] : process.env.CCRF_BASE_URL;
-  const cleaned = urlIndex >= 0 ? [...argv.slice(0, urlIndex), ...argv.slice(urlIndex + 2)] : argv;
+  const baseUrl = urlIndex >= 0
+    ? argv[urlIndex + 1]
+    : (process.env.CCRF_BASE_URL ?? process.env.BASTIONCC_BASE_URL);
+  const withoutUrl = urlIndex >= 0 ? [...argv.slice(0, urlIndex), ...argv.slice(urlIndex + 2)] : argv;
+  const jsonMode = withoutUrl.includes("--json");
+  const cleaned = withoutUrl.filter((arg) => arg !== "--json");
+
+  if (cleaned.length === 0 || cleaned.includes("--help") || cleaned.includes("-h")) {
+    process.stdout.write(usageText());
+    return;
+  }
+
   if (baseUrl) {
     const client = new HttpCliClient({
       baseUrl,
-      authToken: process.env.CCRF_AUTH_TOKEN,
-      totp: process.env.CCRF_TOTP_CODE,
+      authToken: process.env.CCRF_AUTH_TOKEN ?? process.env.BASTIONCC_AUTH_TOKEN,
+      totp: process.env.CCRF_TOTP_CODE ?? process.env.BASTIONCC_TOTP_CODE,
     });
+    if (cleaned[0] === "repl") {
+      const sessionId = cleaned[1];
+      if (!sessionId) throw new Error("repl requires SESSION_ID");
+      await runRepl(sessionId, cleaned.slice(2), client);
+      return;
+    }
     const result = await runCliRemote(cleaned, client);
+    if (!jsonMode && result.ok && cleaned[0] === "chat" && result.data && typeof result.data === "object") {
+      const chatData = result.data as {
+        sessionId?: string;
+        runId?: string;
+        status?: string;
+        providerSessionId?: string;
+        output?: string;
+      };
+      process.stdout.write(`${chatData.output ?? ""}\n`);
+      process.stderr.write(
+        `[bastioncc] session=${chatData.sessionId ?? ""} run=${chatData.runId ?? ""} status=${chatData.status ?? ""}${chatData.providerSessionId ? ` resume=${chatData.providerSessionId}` : ""}\n`,
+      );
+      return;
+    }
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }

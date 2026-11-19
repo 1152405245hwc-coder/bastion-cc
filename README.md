@@ -27,11 +27,11 @@
    - 支持按会话切换 `accountProfile`（如 `pro-1` / `pro-2`），配合 `CCRF_ACCOUNTS_ROOT` 为每个账号隔离独立的 `CLAUDE_CONFIG_DIR`，并注入一致的美西时区与语言指纹（`TZ=America/Los_Angeles`、`LANG=en_US.UTF-8`）。
    - Electron 桌面端自带 `link-router.mjs`：拦截 Claude 官方域名并拉起隔离代理浏览器，普通链接（如 GitHub）交还系统浏览器，**无需破坏性拆包第三方二进制**。
 3. **三端合一工作台（桌面端 + Web 端 + 远程 CLI）**
-   - **桌面端 (`clients/desktop`)**：Electron 沙箱加固壳，自适应系统深浅色模式（Dark / Light Mode），支持 **⚡ 一键启停本地服务**、**🏃 本机执行器**、原生项目目录选择器。
-   - **Web 工作台 (`clients/web`)**：零外部构建依赖，严格 CSP，支持 SSE 实时事件流、项目目录分组、实时检索、会话内联重命名、分叉（Fork）、导出 Markdown、草稿自动保存、Enter 防误触（中文输入法 IME 安全）。
-   - **远程 CLI (`clients/cli`)**：内置 `chat <sessionId> <prompt>` 一行问答并自动创建/续接会话。
-4. **手机与新设备 6 位一次性配对码 + 分级令牌**
-   - 参考轻量化多端配对设计：`POST /v1/devices/pair-code` 生成 5 分钟单次有效 6 位配对码，远程端凭 `pair <code>` 换取限定作用域（`control` / `read` / `runner`）的独立令牌，可选叠加 RFC 6238 TOTP 动态口令。
+   - **桌面端 (`clients/desktop`)**：Electron 沙箱加固壳，自适应系统深浅色模式（Dark / Light Mode），支持 **⚡ 一键启停本地服务**、**🏃 本机执行器**、SSE 实时流推送、**6 位配对码直连** 与原生项目目录选择器。
+   - **Web 工作台 (`clients/web`)**：零外部构建依赖，严格 CSP，支持 **异步长任务执行 + SSE 自动实时刷新正文与审批态**、**6 位配对码登录**、项目目录分组、实时检索、会话内联重命名、分叉（Fork）、导出 Markdown、草稿自动保存、Enter 防误触（中文输入法 IME 安全）。
+   - **远程 CLI (`clients/cli` / `bastioncc`)**：内置 `chat <sessionId> <prompt>` 一行对话、**`repl <sessionId>` 交互式终端续聊**（`/status` `/metrics` `/exit`）与 `--json` 结构化输出模式。
+4. **手机与新设备 6 位一次性配对码 + 持久化分级令牌**
+   - `POST /v1/devices/pair-code` 生成 5 分钟单次有效 6 位配对码；远程端在网页、桌面端或 CLI 凭 `pair <code>` 兑换限域（`control` / `read` / `runner`）令牌；内置连续失败锁定防爆破，已授权及已吊销设备持久化存入 SQLite，重启不失效。
 5. **控制 / 正文 / 执行 三面分离**
    - **事件与正文物理隔离**：SQLite `events` 表只存元数据与序号，对话正文独立写入 `run_bodies`（支持 `CCRF_BODY_KEY` 开启 `AES-256-GCM` 静态加密与空闲压缩），通知与断线恢复绝不泄露对话或密钥。
    - **本机反向跑腿 (`OutboundRunnerDaemon`)**：无需为家庭宽带或笔记本开放入站端口，主动向总机领单并在本地项目目录受限执行，高危操作挂起等待网页/桌面确认。
@@ -94,8 +94,8 @@ npm run start:server
 
 ```sh
 install -d -m 700 /var/lib/bastion-cc
-export CCRF_HOST="127.0.0.1" # 公网或私网监听前请配置反代或 Tailscale，且公网绑定强制要求 authToken
-export CCRF_PORT="8787"
+export CCRF_BIND_HOST="127.0.0.1" # 兼容别名 CCRF_HOST；公网绑定强制要求 authToken
+export CCRF_BIND_PORT="8787"      # 兼容别名 CCRF_PORT
 export CCRF_EVENT_DB="/var/lib/bastion-cc/events.sqlite"
 export CCRF_BODY_KEY="REPLACE_WITH_LONG_RANDOM_PASSPHRASE"
 export CCRF_AUTH_TOKEN="REPLACE_WITH_STRONG_BEARER_TOKEN"
@@ -106,15 +106,18 @@ export CCRF_ACCOUNTS_ROOT="/var/lib/bastion-cc/accounts"
 node scripts/start-server.mjs
 ```
 
-### 方式三：本地终端一线直连对话 & 手机配对
+### 方式三：本地终端一线直连对话 & 交互 REPL & 手机配对
 
 ```sh
-# 1) 在控制端生成 6 位配对码后，新设备一行兑换令牌：
-node --experimental-strip-types clients/cli/src/index.ts --url http://127.0.0.1:8787 pair 123456
+# 1) 在控制端生成 6 位配对码后，新设备一行兑换令牌（网页端与桌面端亦内置 6 位码登录）：
+./scripts/bastioncc.mjs --url http://127.0.0.1:8787 pair 123456
 
-# 2) 自动建会话并在服务器以 --resume 模式连续对话：
+# 2) 一行提问并在服务器以 --resume 模式连续对话（加 --json 可输出完整 JSON）：
 export CCRF_AUTH_TOKEN="YOUR_DEVICE_TOKEN_HERE"
-node --experimental-strip-types clients/cli/src/index.ts --url http://127.0.0.1:8787 chat backend-fix "帮我检查登录接口的幂等处理"
+./scripts/bastioncc.mjs --url http://127.0.0.1:8787 chat backend-fix "帮我检查登录接口的幂等处理"
+
+# 3) 或进入交互式连续终端：
+./scripts/bastioncc.mjs --url http://127.0.0.1:8787 repl backend-fix
 ```
 
 ---
@@ -140,13 +143,16 @@ docs/                 参考文档：架构图、威胁模型、能力矩阵、�
 每一次代码提交与公开发布都必须通过以下只读门禁：
 
 ```sh
-# 1) 全量语法检查 (.ts / .mjs / .js) + 运行全套测试（含 Git 历史隐私测试）
+# 1) 全量语法检查 (.ts / .mjs / .js) + JS/TS 契约与 E2E Socket 测试（含 Git 历史隐私测试）
 npm run check
 
-# 2) 敏感信息、公网 IP、个人路径、密钥形态扫描
+# 2) VPS 通知与安全重启守护脚本 Python 单元测试
+npm run test:python
+
+# 3) 敏感信息、公网 IP、个人路径、密钥形态扫描
 python3 -B security/verification/public_scan.py
 
-# 3) 工作树洁净度、提交身份与危险工件扩展名检查
+# 4) 工作树洁净度、提交身份与危险工件扩展名检查
 python3 -B security/verification/release_gate.py
 ```
 

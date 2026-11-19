@@ -1,18 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.1.0
 
-- Added a loopback-first HTTP control server with bounded JSON requests and bearer authentication for public binding.
-- Added SQLite event storage with cursor reads, idempotency and transactional state import.
-- Added a metadata-safe HTTP CLI client and an explicit provider adapter boundary.
-- Integrated public-safe deployment profiles for OAuth isolation, fail-closed DNS, VPS NAT protection, least-privilege notifications, safe reboot and rollback.
-- Added privacy, product-boundary and similar-project audit records.
-- Hydrated `ControlPlane` session, run, lease and output sequence state from `EventStoreLike` on startup.
-- Added `/v1/sessions/:sessionId/runs/approve`, module-relative static web asset resolution, and full `HttpCliClient`/desktop preload lifecycle methods.
-- Synced hardened `deploy/` scripts (`bbr.conf`, `claude-us-browser`, `safe-scheduled-reboot.py`, `ccrf-tg-notify.py`) and release-gate identity/dirty-flag checks.
-- Added `ClaudeCliProviderAdapter` (`CCRF_PROVIDER=claude-cli`) supporting headless `claude` `stream-json` execution with token redaction.
-- Added encrypted/bounded `run_bodies` storage (AES-256-GCM via `CCRF_BODY_KEY`), chunked transcript pagination, session listing/deletion, and idle body compaction.
-- Added `DeviceRegistry` multi-device scoped token enrollment (`control`, `read`, `runner`), expiry, and revocation.
-- Added SSE `/v1/sessions/:id/stream`, outbound runner lease/heartbeat/output/approval/complete HTTP endpoints, and `OutboundRunnerDaemon`.
-- Added read-only `importLegacyV26Database` importer and dual-schema (`events` + `sessions`) support in reboot/notification VPS scripts.
-- Upgraded `clients/web`, `clients/desktop` (with native `link-router.mjs` Claude OAuth URL isolation eliminating `app.asar` patching), `clients/cli` (`runCliRemote`), `Dockerfile`, `docker-compose.yml`, and `deploy/server/cc-relay-forge.service`.
+- Added a loopback-first HTTP control server with bounded JSON requests and bearer authentication for public binding, serving Web UI static assets cleanly while gating `/health` and `/v1/*` routes.
+- Added SQLite event storage with cursor reads, idempotency, persistent `devices` and `idempotency_keys` tables, encrypted/bounded `run_bodies` (AES-256-GCM via `CCRF_BODY_KEY`), chunked transcript pagination, and idle body compaction.
+- Added real async provider execution (`async: true`, periodic lease renewal, single active run lock per session) with `AbortController` subprocess cancellation and non-deadlocking bounded `stderr` drainage in `ClaudeCliProviderAdapter`.
+- Added native `claude` CLI `--resume` continuity, cache hit-rate telemetry, `--permission-mode` mapping (`plan-only` -> `plan`, `auto-edit` -> `acceptEdits`), and multi-account `CLAUDE_CONFIG_DIR` isolation (`CCRF_ACCOUNTS_ROOT`).
+- Added `DeviceRegistry` scoped tokens (`control`, `read`, `runner`), single-use 6-digit pairing codes with brute-force lockout protection, SQLite persistence, and optional RFC 6238 TOTP 2FA.
+- Upgraded `clients/web`, `clients/desktop` (with native `link-router.mjs`, 6-digit pairing login, live SSE bridge, and `start:desktop`), and `clients/cli` (`bastioncc` / `ccrf` bin wrapper, human-readable `chat` output, and interactive `repl`).
+- Added `OutboundRunnerDaemon`, real TCP socket E2E tests (`tests/integration/e2e-socket.test.ts`), Python VPS script unit tests (`tests/python/test_vps_scripts.py`), Docker healthchecks, GitHub issue/PR templates, and release-gate privacy/identity checks.

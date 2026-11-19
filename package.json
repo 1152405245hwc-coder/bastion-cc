@@ -1,8 +1,24 @@
 {
   "name": "cc-relay-forge",
   "version": "0.1.0",
+  "description": "BastionCC (cc-relay-forge): self-hosted remote session control plane and prompt-cache-preserving CLI/Web/Desktop workbench for Claude Code.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "keywords": [
+    "claude-code",
+    "remote-cli",
+    "control-plane",
+    "prompt-cache",
+    "self-hosted"
+  ],
   "private": true,
   "type": "module",
+  "bin": {
+    "bastioncc": "./scripts/bastioncc.mjs",
+    "ccrf": "./scripts/bastioncc.mjs"
+  },
   "workspaces": [
     "core/*",
     "server/*",
@@ -13,9 +29,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test",
+    "test:python": "python3 -B -m unittest discover -s tests/python -v",
     "check": "npm run runtime-check && npm test",
     "runtime-check": "node scripts/runtime-check.mjs",
-    "start:server": "node scripts/start-server.mjs"
+    "start:server": "node scripts/start-server.mjs",
+    "start:desktop": "NODE_OPTIONS='--experimental-strip-types' npx electron clients/desktop"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

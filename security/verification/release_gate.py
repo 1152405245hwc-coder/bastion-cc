@@ -16,7 +16,7 @@ from pathlib import Path
 ALLOWED_IDENTITIES = {("CC Relay Forge", "noreply@example.invalid")}
 EXEMPT_HIDDEN_NAMES = {".gitignore", ".editorconfig"}
 EXEMPT_HIDDEN_DIRS = {".github"}
-SKIP_DIRS = {".git", "__pycache__"}
+SKIP_DIRS = {".git", "__pycache__", "node_modules", "dist"}
 SUSPICIOUS_NAMES = {
     ".aws",
     ".cloudflared",

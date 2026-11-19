@@ -29,5 +29,12 @@ contextBridge.exposeInMainWorld("relay", Object.freeze({
   revokeDevice: (deviceId) => ipcRenderer.invoke("relay:revoke-device", deviceId),
   createPairingCode: (input) => ipcRenderer.invoke("relay:create-pairing-code", input),
   redeemPairingCode: (code) => ipcRenderer.invoke("relay:redeem-pairing-code", code),
+  subscribeSession: (sessionId, cursor = 0) => ipcRenderer.invoke("relay:subscribe-session", sessionId, cursor),
+  unsubscribeSession: () => ipcRenderer.invoke("relay:unsubscribe-session"),
+  onSessionEvent: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on("relay:session-event", wrapped);
+    return () => ipcRenderer.removeListener("relay:session-event", wrapped);
+  },
   openExternal: (url) => ipcRenderer.invoke("relay:open-external", url),
 }));

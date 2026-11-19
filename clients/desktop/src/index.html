@@ -180,6 +180,7 @@
       user-select: none;
     }
     .connect-drawer form { margin-top: .45rem; }
+    #pair-code-input { font-family: ui-monospace, monospace; font-size: 1rem; letter-spacing: .25em; width: 11ch; text-align: center; }
 
     main.shell {
       flex: 1;
@@ -409,12 +410,17 @@
       <button id="oauth-login" type="button" class="secondary compact">🔐 Claude 隔离登录</button>
     </div>
     <details id="connect-drawer" class="connect-drawer">
-      <summary>远程 VPS 连接设置（服务器地址 / 令牌 / TOTP）</summary>
+      <summary>远程 VPS 连接设置（服务器地址 / 令牌 / 6位配对码）</summary>
       <form id="connect-form" class="row">
         <input name="baseUrl" id="base-url-input" value="http://127.0.0.1:8787" placeholder="服务器地址 (如 http://127.0.0.1:8787)" style="flex:1;min-width:220px">
         <input name="authToken" id="auth-token-input" type="password" autocomplete="off" placeholder="访问令牌 (本机可选)" style="flex:1;min-width:160px">
-        <input name="totp" inputmode="numeric" maxlength="6" placeholder="TOTP" style="width:86px">
+        <input name="totp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="TOTP" style="width:86px">
         <button type="submit" class="compact">连接</button>
+      </form>
+      <form id="pair-login-form" class="row">
+        <label for="pair-code-input" style="font-size:.8rem;color:var(--text-muted)">6位配对码登录</label>
+        <input id="pair-code-input" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="\d{6}" maxlength="6" placeholder="000000" required>
+        <button type="submit" class="secondary compact">兑换并连接</button>
       </form>
     </details>
   </header>

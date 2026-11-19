@@ -148,8 +148,12 @@ body { margin: 0; background: var(--bg-canvas); color: var(--text-main); }
   width: fit-content;
   font-variant-numeric: tabular-nums;
 }
+.connect-group { display: flex; flex-direction: column; gap: .45rem; align-items: flex-end; }
 .connect-bar { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; }
 .connect-bar label { display: grid; gap: .2rem; font-size: .78rem; color: var(--text-muted); }
+.pair-login-bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.pair-login-bar label { font-size: .78rem; color: var(--text-muted); }
+#pair-code-input { font-family: ui-monospace, monospace; font-size: 1rem; letter-spacing: .25em; width: 11ch; text-align: center; }
 .layout {
   display: grid;
   grid-template-columns: 290px minmax(360px, 1fr) 280px;

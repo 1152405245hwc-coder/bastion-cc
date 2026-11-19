@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ClaudeAgentSdkProviderAdapter, ClaudeCliProviderAdapter, MockProviderAdapter, UnconfiguredProviderAdapter, createProviderAdapterFromEnvironment } from "../../server/adapters/src/index.ts";
 
 test("mock provider emits bounded, deterministic lifecycle events", async () => {
@@ -135,4 +138,72 @@ test("Claude CLI adapter emits session/cache telemetry, supports --resume, and i
       void _event;
     }
   }, /Invalid account profile/);
+});
+
+test("Claude CLI adapter maps approvalMode to --permission-mode and drains heavy stderr without deadlock", async () => {
+  const seenArgs: string[][] = [];
+  const adapterWithMockSpawn = new ClaudeCliProviderAdapter({
+    executable: "claude-stub",
+    spawnImpl: async function* (_exe, args) {
+      seenArgs.push([...args]);
+      yield JSON.stringify({ type: "result", result: "ok" });
+    },
+  });
+
+  for await (const _event of adapterWithMockSpawn.execute({ runId: "run-plan", prompt: "p", approvalMode: "plan-only" })) {
+    void _event;
+  }
+  for await (const _event of adapterWithMockSpawn.execute({ runId: "run-edit", prompt: "e", approvalMode: "auto-edit" })) {
+    void _event;
+  }
+  assert.ok(seenArgs[0]!.includes("--permission-mode") && seenArgs[0]!.includes("plan"));
+  assert.ok(seenArgs[1]!.includes("--permission-mode") && seenArgs[1]!.includes("acceptEdits"));
+
+  const dir = mkdtempSync(join(tmpdir(), "ccrf-cli-stub-"));
+  try {
+    const stubPath = join(dir, "claude-fake.mjs");
+    writeFileSync(
+      stubPath,
+      [
+        `#!${process.execPath}`,
+        "if (process.argv.includes('sleep')) {",
+        "  process.stdout.write(JSON.stringify({ type: 'content_block_delta', delta: { text: 'waiting' } }) + '\\n');",
+        "  setInterval(() => {}, 1000);",
+        "} else {",
+        "  process.stderr.write('e'.repeat(131072));",
+        "  process.stdout.write(JSON.stringify({ type: 'result', result: 'drained-ok' }) + '\\n');",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    chmodSync(stubPath, 0o700);
+
+    const realAdapter = new ClaudeCliProviderAdapter({ executable: stubPath });
+    const drainedEvents = [];
+    for await (const event of realAdapter.execute({ runId: "run-stderr", prompt: "drain" })) {
+      drainedEvents.push(event);
+    }
+    assert.deepEqual(drainedEvents, [
+      { type: "started", runId: "run-stderr" },
+      { type: "output", runId: "run-stderr", text: "drained-ok" },
+      { type: "completed", runId: "run-stderr" },
+    ]);
+
+    const abortController = new AbortController();
+    const cancelPromise = (async () => {
+      for await (const event of realAdapter.execute({
+        runId: "run-sleep",
+        prompt: "sleep",
+        signal: abortController.signal,
+      })) {
+        if (event.type === "output") {
+          abortController.abort();
+        }
+      }
+    })();
+    await assert.rejects(cancelPromise, /Provider execution was cancelled/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

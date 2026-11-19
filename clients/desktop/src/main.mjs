@@ -22,11 +22,65 @@ let localServer = null;
 let localServerUrl = "";
 let localRunner = null;
 let runnerRunning = false;
+let activeStreamController = null;
+let currentTotp = process.env.CC_RELAY_TOTP || "";
 let currentConfig = {
   baseUrl: process.env.CC_RELAY_BASE_URL || "http://127.0.0.1:8787",
   authToken: process.env.CC_RELAY_AUTH_TOKEN || "",
   lastProject: "",
 };
+
+function stopSessionStream() {
+  if (activeStreamController) {
+    activeStreamController.abort();
+    activeStreamController = null;
+  }
+}
+
+async function subscribeSessionStream(sender, sessionId, cursor = 0) {
+  stopSessionStream();
+  if (!sessionId) return { subscribed: false };
+  const controller = new AbortController();
+  activeStreamController = controller;
+  const base = (currentConfig.baseUrl || "http://127.0.0.1:8787").replace(/\/$/, "");
+  const headers = {
+    accept: "text/event-stream",
+    ...(currentConfig.authToken ? { authorization: `Bearer ${currentConfig.authToken}` } : {}),
+    ...(currentTotp ? { "x-ccrf-totp": currentTotp } : {}),
+  };
+  void (async () => {
+    try {
+      const response = await fetch(
+        `${base}/v1/sessions/${encodeURIComponent(sessionId)}/stream?cursor=${cursor}`,
+        { headers, signal: controller.signal },
+      );
+      if (!response.ok || !response.body) return;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() ?? "";
+        for (const block of blocks) {
+          const dataLine = block.split("\n").find((line) => line.startsWith("data: "));
+          if (!dataLine) continue;
+          if (sender.isDestroyed()) return;
+          sender.send("relay:session-event", JSON.parse(dataLine.slice(6)));
+        }
+      }
+    } catch {
+      // Abort or disconnect closes stream silently; next session switch re-subscribes.
+    } finally {
+      if (activeStreamController === controller) {
+        activeStreamController = null;
+      }
+    }
+  })();
+  return { subscribed: true, sessionId };
+}
 
 function configFilePath() {
   return path.join(app.getPath("userData"), "ccrf-desktop-config.json");
@@ -96,7 +150,7 @@ async function toggleLocalServer() {
   const stateDir = path.join(app.getPath("userData"), "state");
   await mkdir(stateDir, { recursive: true });
   const plane = new ControlPlane(new SqliteEventStore(path.join(stateDir, "events.sqlite")));
-  const deviceRegistry = new DeviceRegistry();
+  const deviceRegistry = new DeviceRegistry({ store: plane.store });
   const localToken = currentConfig.authToken || `ccrf_local_${randomUUID()}`;
   const provider = process.env.CCRF_PROVIDER
     ? createProviderAdapterFromEnvironment()
@@ -188,6 +242,7 @@ function createWindow() {
   window.loadFile(path.join(__dirname, "index.html"));
   mainWindow = window;
   window.on("closed", () => {
+    stopSessionStream();
     if (mainWindow === window) mainWindow = null;
   });
   return window;
@@ -202,6 +257,7 @@ app.whenReady().then(async () => {
   client = buildClient();
 
   ipcMain.handle("relay:configure", async (_event, config) => {
+    currentTotp = typeof config?.totp === "string" ? config.totp : "";
     await persistConfig(config || {});
     client = buildClient(config);
     return { configured: true };
@@ -242,12 +298,18 @@ app.whenReady().then(async () => {
   ipcMain.handle("relay:revoke-device", (_event, deviceId) => client.revokeDevice(deviceId));
   ipcMain.handle("relay:create-pairing-code", (_event, input) => client.createPairingCode(input));
   ipcMain.handle("relay:redeem-pairing-code", (_event, code) => client.redeemPairingCode(code));
+  ipcMain.handle("relay:subscribe-session", (event, sessionId, cursor) => subscribeSessionStream(event.sender, sessionId, cursor));
+  ipcMain.handle("relay:unsubscribe-session", () => {
+    stopSessionStream();
+    return { unsubscribed: true };
+  });
   ipcMain.handle("relay:open-external", (_event, targetUrl) => routeExternalLink(targetUrl, { openExternal: (target) => shell.openExternal(target) }));
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
 app.on("before-quit", async () => {
+  stopSessionStream();
   localRunner?.stop();
   runnerRunning = false;
   if (localServer) {

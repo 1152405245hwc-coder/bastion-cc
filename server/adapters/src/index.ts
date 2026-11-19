@@ -17,6 +17,8 @@ export interface ProviderRequest {
   resumeSessionId?: string | undefined;
   accountProfile?: string | undefined;
   cwd?: string | undefined;
+  approvalMode?: "manual" | "auto-edit" | "plan-only" | undefined;
+  reasoningEffort?: "low" | "medium" | "high" | "max" | undefined;
 }
 
 export type ProviderEvent =
@@ -172,14 +174,28 @@ async function* defaultSpawnLines(
     ...(options.env ? { env: options.env } : {}),
     stdio: ["ignore", "pipe", "pipe"],
   });
+  let stderrTail = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    stderrTail = (stderrTail + chunk).slice(-4096);
+  });
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
   const exitPromise = new Promise<void>((resolve, reject) => {
-    child.once("error", (err) => reject(err));
+    child.once("error", (err) => {
+      if (killTimer) clearTimeout(killTimer);
+      reject(err);
+    });
     child.once("close", (code, signal) => {
+      if (killTimer) clearTimeout(killTimer);
       if (code === 0) resolve();
-      else reject(new Error(`Claude CLI exited with ${code ?? signal ?? "error"}`));
+      else {
+        const hint = stderrTail.trim();
+        reject(new Error(`Claude CLI exited with ${code ?? signal ?? "error"}${hint ? `: ${redactSensitiveText(hint).slice(-240)}` : ""}`));
+      }
     });
   });
+  exitPromise.catch(() => {});
   try {
     for await (const line of rl) {
       if (line.trim()) yield line;
@@ -187,7 +203,16 @@ async function* defaultSpawnLines(
     await exitPromise;
   } finally {
     rl.close();
-    if (!child.killed && child.exitCode === null) child.kill("SIGTERM");
+    child.stderr.resume();
+    if (!child.killed && child.exitCode === null) {
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        if (!child.killed && child.exitCode === null) {
+          child.kill("SIGKILL");
+        }
+      }, 3000);
+      killTimer.unref?.();
+    }
   }
 }
 
@@ -214,6 +239,10 @@ export class ClaudeCliProviderAdapter implements ProviderAdapter {
       throw providerFailure("Invalid account profile");
     }
     yield { type: "started", runId: request.runId };
+    const hasPermissionFlag = this.extraArgs.includes("--permission-mode");
+    const permissionArgs = !hasPermissionFlag && (request.approvalMode === "plan-only" || request.approvalMode === "auto-edit")
+      ? ["--permission-mode", request.approvalMode === "plan-only" ? "plan" : "acceptEdits"]
+      : [];
     const args = [
       "-p",
       request.prompt,
@@ -221,6 +250,7 @@ export class ClaudeCliProviderAdapter implements ProviderAdapter {
       "stream-json",
       "--verbose",
       ...(request.resumeSessionId ? ["--resume", request.resumeSessionId] : []),
+      ...permissionArgs,
       ...this.extraArgs,
     ];
     const effectiveCwd = request.cwd ?? this.cwd;
@@ -255,6 +285,7 @@ export class ClaudeCliProviderAdapter implements ProviderAdapter {
       }
     } catch (error) {
       if (error instanceof ProtocolError) throw error;
+      if (request.signal?.aborted) throw providerFailure("Provider execution was cancelled");
       throw providerFailure("Claude CLI execution failed");
     }
     yield { type: "completed", runId: request.runId };

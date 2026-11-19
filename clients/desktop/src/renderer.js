@@ -8,6 +8,9 @@ const state = {
   generation: 0,
   run: null,
   transcriptCursor: 0,
+  lastEventSeq: 0,
+  transcriptPending: false,
+  transcriptReloadQueued: false,
   search: '',
   sessionsCache: [],
   lastPrompt: '',
@@ -118,17 +121,21 @@ const loadTranscript = async (reset = false) => {
     if (reset) renderEmptyState('💬 当前会话暂无对话记录');
     return;
   }
+  const targetSession = state.session;
+  const targetRunId = state.run.runId;
   if (reset) {
     state.transcriptCursor = 0;
     $('transcript').replaceChildren();
   }
-  const page = await window.relay.getRunTranscript(state.session, state.run.runId, state.transcriptCursor);
+  const page = await window.relay.getRunTranscript(targetSession, targetRunId, state.transcriptCursor);
+  if (state.session !== targetSession || state.run?.runId !== targetRunId) return;
   if (!page) return;
   state.run = { ...state.run, status: page.status };
   renderRunState();
   const chunks = page.chunks || [];
   if (chunks.length > 0) $('empty-state')?.remove();
   for (const chunk of chunks) {
+    if (chunk.chunkIndex < state.transcriptCursor) continue;
     const box = document.createElement('div');
     box.className = `chunk ${chunk.role === 'prompt' ? 'prompt' : 'output'}`;
     const head = document.createElement('div');
@@ -139,12 +146,13 @@ const loadTranscript = async (reset = false) => {
     body.textContent = chunk.text;
     box.append(head, body);
     $('transcript').append(box);
+    state.transcriptCursor = Math.max(state.transcriptCursor, chunk.chunkIndex + 1);
   }
   if ($('transcript').children.length === 0) {
     renderEmptyState('💬 当前会话暂无对话记录');
   }
   $('transcript').scrollTop = $('transcript').scrollHeight;
-  if (typeof page.nextCursor === 'number') state.transcriptCursor = page.nextCursor;
+  if (typeof page.nextCursor === 'number') state.transcriptCursor = Math.max(state.transcriptCursor, page.nextCursor);
 };
 
 const renderSessionGroups = (sessions) => {
@@ -203,19 +211,24 @@ const updateTagChip = (id, text) => {
   el.textContent = text;
 };
 
-const selectSession = async (sessionId) => {
-  showError('');
-  showNotice('');
-  saveDraft();
-  const previousRun = state.run;
-  state.session = sessionId;
-  state.run = null;
-  try {
-    localStorage.setItem(LAST_SESSION_KEY, sessionId);
-  } catch {
-    // Ignore storage failures.
+const scheduleTranscriptRefresh = () => {
+  if (state.transcriptPending) {
+    state.transcriptReloadQueued = true;
+    return;
   }
-  const session = await window.relay.getSession(sessionId);
+  state.transcriptPending = true;
+  void loadTranscript(false)
+    .catch(showError)
+    .finally(() => {
+      state.transcriptPending = false;
+      if (state.transcriptReloadQueued) {
+        state.transcriptReloadQueued = false;
+        scheduleTranscriptRefresh();
+      }
+    });
+};
+
+const renderSessionHeader = (session, previousRun) => {
   $('active-session').textContent = session.title ? `${session.title} (${session.sessionId})` : session.sessionId;
   updateTagChip('active-project-tag', session.project ? `📁 ${session.project}` : '');
   updateTagChip('active-claude-tag', [
@@ -233,14 +246,33 @@ const selectSession = async (sessionId) => {
   if (session.currentRunId) {
     state.run = {
       runId: session.currentRunId,
-      status: previousRun?.runId === session.currentRunId ? previousRun.status : 'unknown',
+      status: session.currentRunStatus || (previousRun?.runId === session.currentRunId ? previousRun.status : 'unknown'),
       ...(previousRun?.runId === session.currentRunId && previousRun.leaseId ? { leaseId: previousRun.leaseId } : {}),
     };
   }
+};
+
+const selectSession = async (sessionId) => {
+  showError('');
+  showNotice('');
+  saveDraft();
+  const previousRun = state.run;
+  state.session = sessionId;
+  state.run = null;
+  state.transcriptCursor = 0;
+  state.lastEventSeq = 0;
+  try {
+    localStorage.setItem(LAST_SESSION_KEY, sessionId);
+  } catch {
+    // Ignore storage failures.
+  }
+  const session = await window.relay.getSession(sessionId);
+  renderSessionHeader(session, previousRun);
   setSessionEnabled(true);
   restoreDraft(sessionId);
   renderRunState();
   await Promise.all([loadSessions(), loadTranscript(true)]);
+  await window.relay.subscribeSession(sessionId, 0);
 };
 
 const generateSessionId = () => {
@@ -327,6 +359,27 @@ $('connect-form').addEventListener('submit', async (event) => {
     await loadSessions();
     if ($('connect-drawer')) $('connect-drawer').open = false;
     showNotice('已连接到控制服务器');
+  } catch (error) {
+    showError(error);
+  }
+});
+
+$('pair-login-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  showError('');
+  showNotice('');
+  const baseUrl = String($('base-url-input').value || 'http://127.0.0.1:8787').trim();
+  const code = String($('pair-code-input').value || '').trim();
+  if (!code) return;
+  try {
+    await window.relay.configure({ baseUrl, authToken: '' });
+    const redeemed = await window.relay.redeemPairingCode(code);
+    await window.relay.configure({ baseUrl, authToken: redeemed.credential });
+    $('auth-token-input').value = redeemed.credential;
+    $('pair-code-input').value = '';
+    await loadSessions();
+    if ($('connect-drawer')) $('connect-drawer').open = false;
+    showNotice(`已通过6位配对码绑定设备: ${redeemed.device?.deviceId || 'device'}`);
   } catch (error) {
     showError(error);
   }
@@ -451,6 +504,7 @@ $('export-session').addEventListener('click', async () => {
 $('delete-session').addEventListener('click', async () => {
   if (!state.session) return;
   try {
+    await window.relay.unsubscribeSession();
     await window.relay.deleteSession(state.session);
     try { localStorage.removeItem(draftKey(state.session)); } catch {}
     state.session = '';
@@ -494,12 +548,19 @@ const submitPrompt = async (promptText) => {
       idempotencyKey: crypto.randomUUID(),
       prompt: promptText,
       execute,
+      ...(execute ? { async: true } : {}),
       approvalMode,
       reasoningEffort,
     });
+    state.transcriptCursor = 0;
     $('prompt-input').value = '';
     saveDraft();
-    await selectSession(state.session);
+    renderRunState();
+    await loadTranscript(true);
+    await window.relay.subscribeSession(state.session, state.lastEventSeq);
+    if (!execute) {
+      await loadSessions();
+    }
   } catch (error) {
     $('retry-last').hidden = false;
     showError(error);
@@ -552,6 +613,40 @@ for (const [id, fn] of [['disconnect', 'disconnect'], ['reconnect', 'reconnect']
     }
   });
 }
+
+const REFRESH_STATE_EVENTS = new Set([
+  'RunStarted',
+  'ApprovalRequested',
+  'ApprovalResponded',
+  'RunCompleted',
+  'RunFailed',
+  'RunCancelled',
+  'RunUnknown',
+  'SessionUpdated',
+]);
+
+window.relay.onSessionEvent((event) => {
+  if (!event || event.aggregateId !== state.session) return;
+  if (typeof event.sequence === 'number') {
+    state.lastEventSeq = Math.max(state.lastEventSeq, event.sequence);
+  }
+  if (event.type === 'OutputChunk') {
+    scheduleTranscriptRefresh();
+  } else if (REFRESH_STATE_EVENTS.has(event.type)) {
+    void (async () => {
+      try {
+        const previousRun = state.run;
+        const session = await window.relay.getSession(state.session);
+        renderSessionHeader(session, previousRun);
+        renderRunState();
+      } catch {
+        // Ignore transient fetch errors while streaming.
+      }
+      scheduleTranscriptRefresh();
+      await loadSessions().catch(() => {});
+    })();
+  }
+});
 
 window.addEventListener('DOMContentLoaded', async () => {
   try {

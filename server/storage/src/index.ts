@@ -41,6 +41,24 @@ export interface StoreState {
   snapshots: Snapshot[];
 }
 
+export interface StoredDeviceRecord {
+  deviceId: string;
+  label: string;
+  scopes: readonly string[];
+  issuedAt: number;
+  expiresAt: number;
+  revokedAt?: number;
+  credentialHashHex: string;
+}
+
+export interface StoredIdempotencyRecord {
+  idempotencyKey: string;
+  sessionId: string;
+  runId: string;
+  requestFingerprint: string;
+  createdAt: string;
+}
+
 export interface EventStoreLike {
   append(event: Omit<StoredEvent, "sequence" | "createdAt">): StoredEvent;
   appendEnvelope<T>(aggregateId: string, envelope: Envelope<T>, type: string): StoredEvent;
@@ -54,6 +72,10 @@ export interface EventStoreLike {
   readChunks(sessionId: string, runId: string, afterChunk?: number, maxBytes?: number): ChunkPage;
   deleteSessionData(sessionId: string): void;
   compactBodies(options: { keepLatestRunsPerSession: number }): number;
+  saveIdempotency?(record: Omit<StoredIdempotencyRecord, "createdAt">): void;
+  listIdempotency?(): StoredIdempotencyRecord[];
+  saveDevice?(record: StoredDeviceRecord): void;
+  listDevices?(): StoredDeviceRecord[];
 }
 
 export class EventStore implements EventStoreLike {
@@ -63,6 +85,8 @@ export class EventStore implements EventStoreLike {
   private readonly sequences = new Map<string, number>();
   private readonly chunks = new Map<string, StoredChunk[]>();
   private readonly sessionRunOrder = new Map<string, string[]>();
+  private readonly idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
+  private readonly deviceRecords = new Map<string, StoredDeviceRecord>();
 
   append(event: Omit<StoredEvent, "sequence" | "createdAt">): StoredEvent {
     const existing = this.eventIds.get(event.eventId);
@@ -178,6 +202,32 @@ export class EventStore implements EventStoreLike {
       this.chunks.delete(runId);
     }
     this.sessionRunOrder.delete(sessionId);
+    for (const [key, record] of this.idempotencyRecords.entries()) {
+      if (record.sessionId === sessionId) this.idempotencyRecords.delete(key);
+    }
+  }
+
+  saveIdempotency(record: Omit<StoredIdempotencyRecord, "createdAt">): void {
+    if (!this.idempotencyRecords.has(record.idempotencyKey)) {
+      this.idempotencyRecords.set(record.idempotencyKey, { ...record, createdAt: new Date().toISOString() });
+    }
+  }
+
+  listIdempotency(): StoredIdempotencyRecord[] {
+    return [...this.idempotencyRecords.values()].map((record) => ({ ...record }));
+  }
+
+  saveDevice(record: StoredDeviceRecord): void {
+    this.deviceRecords.set(record.deviceId, {
+      ...record,
+      scopes: [...record.scopes],
+    });
+  }
+
+  listDevices(): StoredDeviceRecord[] {
+    return [...this.deviceRecords.values()]
+      .map((record) => ({ ...record, scopes: [...record.scopes] }))
+      .sort((left, right) => left.deviceId.localeCompare(right.deviceId));
   }
 
   compactBodies(options: { keepLatestRunsPerSession: number }): number {
@@ -260,6 +310,23 @@ export class SqliteEventStore implements EventStoreLike {
         PRIMARY KEY (run_id, chunk_index)
       );
       CREATE INDEX IF NOT EXISTS idx_run_bodies_session ON run_bodies (session_id, run_id, chunk_index);
+      CREATE TABLE IF NOT EXISTS devices (
+        device_id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        scopes_json TEXT NOT NULL,
+        issued_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked_at INTEGER,
+        credential_hash_hex TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS idempotency_keys (
+        idempotency_key TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_idempotency_session ON idempotency_keys (session_id);
     `);
   }
 
@@ -417,11 +484,75 @@ export class SqliteEventStore implements EventStoreLike {
       this.database.prepare("DELETE FROM events WHERE aggregate_id = ?").run(sessionId);
       this.database.prepare("DELETE FROM snapshots WHERE aggregate_id = ?").run(sessionId);
       this.database.prepare("DELETE FROM run_bodies WHERE session_id = ?").run(sessionId);
+      this.database.prepare("DELETE FROM idempotency_keys WHERE session_id = ?").run(sessionId);
       this.database.exec("COMMIT;");
     } catch {
       try { this.database.exec("ROLLBACK;"); } catch { /* preserve the original failure */ }
       throw new ProtocolError("UNKNOWN", "Failed to delete session data");
     }
+  }
+
+  saveIdempotency(record: Omit<StoredIdempotencyRecord, "createdAt">): void {
+    this.database.prepare(
+      `INSERT INTO idempotency_keys (idempotency_key, session_id, run_id, request_fingerprint, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(idempotency_key) DO NOTHING`,
+    ).run(record.idempotencyKey, record.sessionId, record.runId, record.requestFingerprint, new Date().toISOString());
+  }
+
+  listIdempotency(): StoredIdempotencyRecord[] {
+    const rows = this.database.prepare(
+      "SELECT idempotency_key, session_id, run_id, request_fingerprint, created_at FROM idempotency_keys ORDER BY rowid",
+    ).all() as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      idempotencyKey: String(row.idempotency_key),
+      sessionId: String(row.session_id),
+      runId: String(row.run_id),
+      requestFingerprint: String(row.request_fingerprint),
+      createdAt: String(row.created_at),
+    }));
+  }
+
+  saveDevice(record: StoredDeviceRecord): void {
+    this.database.prepare(
+      `INSERT INTO devices (device_id, label, scopes_json, issued_at, expires_at, revoked_at, credential_hash_hex)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(device_id) DO UPDATE SET
+         label=excluded.label,
+         scopes_json=excluded.scopes_json,
+         issued_at=excluded.issued_at,
+         expires_at=excluded.expires_at,
+         revoked_at=excluded.revoked_at,
+         credential_hash_hex=excluded.credential_hash_hex`,
+    ).run(
+      record.deviceId,
+      record.label,
+      JSON.stringify([...record.scopes]),
+      record.issuedAt,
+      record.expiresAt,
+      record.revokedAt ?? null,
+      record.credentialHashHex,
+    );
+  }
+
+  listDevices(): StoredDeviceRecord[] {
+    const rows = this.database.prepare(
+      "SELECT device_id, label, scopes_json, issued_at, expires_at, revoked_at, credential_hash_hex FROM devices ORDER BY device_id",
+    ).all() as Array<Record<string, unknown>>;
+    return rows.map((row) => {
+      const parsedScopes = JSON.parse(String(row.scopes_json));
+      const scopes = Array.isArray(parsedScopes) ? parsedScopes.map((item) => String(item)) : [];
+      const revokedAt = typeof row.revoked_at === "number" ? row.revoked_at : undefined;
+      return {
+        deviceId: String(row.device_id),
+        label: String(row.label),
+        scopes,
+        issuedAt: Number(row.issued_at),
+        expiresAt: Number(row.expires_at),
+        ...(revokedAt === undefined ? {} : { revokedAt }),
+        credentialHashHex: String(row.credential_hash_hex),
+      };
+    });
   }
 
   compactBodies(options: { keepLatestRunsPerSession: number }): number {

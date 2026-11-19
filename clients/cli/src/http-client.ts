@@ -96,6 +96,7 @@ export class HttpCliClient {
       prompt: string;
       runId?: string;
       execute?: boolean;
+      async?: boolean;
       approvalMode?: string;
       reasoningEffort?: string;
     },

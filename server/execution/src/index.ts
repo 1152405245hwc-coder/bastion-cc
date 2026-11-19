@@ -21,17 +21,24 @@ export class ExecutionService {
     const accountProfile = request.accountProfile ?? session.accountProfile;
     const projectCwd = session.project && isAbsolute(session.project) ? session.project : undefined;
     const cwd = request.cwd ?? projectCwd;
+    const approvalMode = request.approvalMode ?? session.approvalMode;
+    const reasoningEffort = request.reasoningEffort ?? session.reasoningEffort;
     const enrichedRequest: ProviderRequest = {
       ...request,
       ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
       ...(accountProfile !== undefined ? { accountProfile } : {}),
       ...(cwd !== undefined ? { cwd } : {}),
+      ...(approvalMode !== undefined ? { approvalMode } : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     };
     this.plane.markRunning(sessionId, runId, leaseId);
     const outputs: string[] = [];
     let completed = false;
     try {
       for await (const event of this.provider.execute(enrichedRequest)) {
+        if (enrichedRequest.signal?.aborted || this.plane.getRun(sessionId, runId).lifecycle.status === "cancelled") {
+          return { status: "cancelled", outputs };
+        }
         if (event.type === "output") {
           outputs.push(event.text);
           this.plane.recordOutputChunk(sessionId, runId, leaseId, event.text);
@@ -45,9 +52,15 @@ export class ExecutionService {
           completed = true;
         }
       }
+      if (this.plane.getRun(sessionId, runId).lifecycle.status === "cancelled") {
+        return { status: "cancelled", outputs };
+      }
       const finalState = this.plane.completeRun(sessionId, runId, leaseId, completed ? "completed" : "unknown");
       return { status: finalState.lifecycle.status, outputs };
     } catch (error) {
+      if (this.plane.getRun(sessionId, runId).lifecycle.status === "cancelled") {
+        return { status: "cancelled", outputs };
+      }
       let finalState: RunState;
       try {
         finalState = this.plane.completeRun(sessionId, runId, leaseId, "unknown");

@@ -28,13 +28,63 @@ export interface PairingChallenge {
   expiresAt: number;
 }
 
+export interface PersistedDeviceRecord {
+  deviceId: string;
+  label: string;
+  scopes: readonly string[];
+  issuedAt: number;
+  expiresAt: number;
+  revokedAt?: number;
+  credentialHashHex: string;
+}
+
+export interface DevicePersistenceStore {
+  saveDevice(record: PersistedDeviceRecord): void;
+  listDevices(): PersistedDeviceRecord[];
+}
+
+export interface DeviceRegistryOptions {
+  store?: DevicePersistenceStore | undefined;
+  maxFailedPairAttempts?: number | undefined;
+  pairLockoutWindowMs?: number | undefined;
+}
+
 const VALID_SCOPES = new Set<DeviceScope>(["control", "read", "runner"]);
 const DEFAULT_DEVICE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_PAIR_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_MAX_FAILED_PAIR_ATTEMPTS = 5;
+const DEFAULT_PAIR_LOCKOUT_WINDOW_MS = 5 * 60 * 1000;
 
 export class DeviceRegistry {
   private readonly devices = new Map<string, { device: EnrolledDevice; credentialHash: Buffer }>();
   private readonly pairings = new Map<string, PairingChallenge>();
+  private readonly store: DevicePersistenceStore | undefined;
+  private readonly maxFailedPairAttempts: number;
+  private readonly pairLockoutWindowMs: number;
+  private failedPairAttempts: number[] = [];
+
+  constructor(options: DeviceRegistryOptions = {}) {
+    this.store = options.store;
+    this.maxFailedPairAttempts = options.maxFailedPairAttempts ?? DEFAULT_MAX_FAILED_PAIR_ATTEMPTS;
+    this.pairLockoutWindowMs = options.pairLockoutWindowMs ?? DEFAULT_PAIR_LOCKOUT_WINDOW_MS;
+    const records = this.store?.listDevices() ?? [];
+    for (const record of records) {
+      const scopes = record.scopes.filter((s): s is DeviceScope => VALID_SCOPES.has(s as DeviceScope));
+      if (scopes.length === 0) continue;
+      const device: EnrolledDevice = {
+        deviceId: record.deviceId,
+        label: record.label,
+        scopes,
+        issuedAt: record.issuedAt,
+        expiresAt: record.expiresAt,
+        ...(record.revokedAt === undefined ? {} : { revokedAt: record.revokedAt }),
+      };
+      this.devices.set(record.deviceId, {
+        device,
+        credentialHash: Buffer.from(record.credentialHashHex, "hex"),
+      });
+    }
+  }
 
   createPairingCode(input: EnrollDeviceInput): PairingChallenge {
     if (!input.deviceId || !input.label) {
@@ -67,15 +117,30 @@ export class DeviceRegistry {
   }
 
   redeemPairingCode(code: string, nowMs = Date.now()): { device: EnrolledDevice; credential: string } {
+    const windowStart = nowMs - this.pairLockoutWindowMs;
+    this.failedPairAttempts = this.failedPairAttempts.filter((timestamp) => timestamp > windowStart);
+    if (this.failedPairAttempts.length >= this.maxFailedPairAttempts) {
+      this.pairings.clear();
+      throw new ProtocolError("CAPABILITY_DENIED", "Too many failed pairing attempts");
+    }
     const normalized = typeof code === "string" ? code.trim() : "";
     const challenge = normalized ? this.pairings.get(normalized) : undefined;
     if (!challenge) {
+      this.failedPairAttempts.push(nowMs);
+      if (this.failedPairAttempts.length >= this.maxFailedPairAttempts) {
+        this.pairings.clear();
+      }
       throw new ProtocolError("NOT_FOUND", "Invalid or expired pairing code");
     }
     this.pairings.delete(normalized);
     if (challenge.expiresAt <= nowMs) {
+      this.failedPairAttempts.push(nowMs);
+      if (this.failedPairAttempts.length >= this.maxFailedPairAttempts) {
+        this.pairings.clear();
+      }
       throw new ProtocolError("NOT_FOUND", "Invalid or expired pairing code");
     }
+    this.failedPairAttempts = [];
     return this.enroll({
       deviceId: challenge.deviceId,
       label: challenge.label,
@@ -104,10 +169,12 @@ export class DeviceRegistry {
       issuedAt: now,
       expiresAt: now + ttlMs,
     };
+    const credentialHash = hashCredential(credential);
     this.devices.set(input.deviceId, {
       device,
-      credentialHash: hashCredential(credential),
+      credentialHash,
     });
+    this.store?.saveDevice(toPersistedDevice(device, credentialHash));
     return { device: copyDevice(device), credential };
   }
 
@@ -116,7 +183,7 @@ export class DeviceRegistry {
     const candidateHash = hashCredential(bearerValue);
     let matched: EnrolledDevice | undefined;
     for (const entry of this.devices.values()) {
-      if (timingSafeEqual(entry.credentialHash, candidateHash)) {
+      if (entry.credentialHash.length === candidateHash.length && timingSafeEqual(entry.credentialHash, candidateHash)) {
         matched = entry.device;
       }
     }
@@ -131,6 +198,7 @@ export class DeviceRegistry {
     const entry = this.devices.get(deviceId);
     if (!entry) throw new ProtocolError("NOT_FOUND", "Device not found", { deviceId });
     entry.device.revokedAt = nowMs;
+    this.store?.saveDevice(toPersistedDevice(entry.device, entry.credentialHash));
     return copyDevice(entry.device);
   }
 
@@ -197,6 +265,18 @@ function copyDevice(device: EnrolledDevice): EnrolledDevice {
     issuedAt: device.issuedAt,
     expiresAt: device.expiresAt,
     ...(device.revokedAt === undefined ? {} : { revokedAt: device.revokedAt }),
+  };
+}
+
+function toPersistedDevice(device: EnrolledDevice, credentialHash: Buffer): PersistedDeviceRecord {
+  return {
+    deviceId: device.deviceId,
+    label: device.label,
+    scopes: [...device.scopes],
+    issuedAt: device.issuedAt,
+    expiresAt: device.expiresAt,
+    ...(device.revokedAt === undefined ? {} : { revokedAt: device.revokedAt }),
+    credentialHashHex: credentialHash.toString("hex"),
   };
 }
 

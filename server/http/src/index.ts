@@ -35,12 +35,19 @@ export interface HttpControlServer {
   address(): { host: string; port: number } | undefined;
 }
 
+export interface ActiveExecutionHandle {
+  sessionId: string;
+  abort: () => void;
+}
+
 export interface ControlRequestOptions {
   plane: ControlPlane;
   authToken?: string | undefined;
   totpSecret?: string | undefined;
   deviceRegistry?: DeviceRegistry | undefined;
   provider?: ProviderAdapter | undefined;
+  activeExecutions?: Map<string, ActiveExecutionHandle> | undefined;
+  sseCleanups?: Set<() => void> | undefined;
   maxBodyBytes: number;
   version: string;
 }
@@ -49,18 +56,23 @@ const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const WEB_ROOT = fileURLToPath(new URL("../../../clients/web/", import.meta.url));
 const RUNNER_ACTIONS = new Set(["start-running", "heartbeat", "output", "request-approval", "complete"]);
+const STATIC_WEB_ASSETS: Record<string, { file: string; contentType: string }> = {
+  "/": { file: "index.html", contentType: "text/html; charset=utf-8" },
+  "/index.html": { file: "index.html", contentType: "text/html; charset=utf-8" },
+  "/web": { file: "index.html", contentType: "text/html; charset=utf-8" },
+  "/web/": { file: "index.html", contentType: "text/html; charset=utf-8" },
+  "/web/index.html": { file: "index.html", contentType: "text/html; charset=utf-8" },
+  "/style.css": { file: "style.css", contentType: "text/css; charset=utf-8" },
+  "/web/style.css": { file: "style.css", contentType: "text/css; charset=utf-8" },
+  "/app.js": { file: "app.js", contentType: "text/javascript; charset=utf-8" },
+  "/web/app.js": { file: "app.js", contentType: "text/javascript; charset=utf-8" },
+};
 
 export function createHttpControlServer(options: HttpControlServerOptions = {}): HttpControlServer {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 8787;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const authToken = options.authToken;
-  const plane = options.plane ?? new ControlPlane(
-    process.env.CCRF_EVENT_DB ? new SqliteEventStore(process.env.CCRF_EVENT_DB) : undefined,
-  );
-  const deviceRegistry = options.deviceRegistry ?? new DeviceRegistry();
-  const provider = options.provider ?? (process.env.CCRF_PROVIDER ? createProviderAdapterFromEnvironment() : undefined);
-  let bound = false;
 
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error("port must be an integer from 0 to 65535");
@@ -72,6 +84,25 @@ export function createHttpControlServer(options: HttpControlServerOptions = {}):
     throw new Error("public binding requires authToken");
   }
 
+  const ownedStore = !options.plane && process.env.CCRF_EVENT_DB
+    ? new SqliteEventStore(process.env.CCRF_EVENT_DB)
+    : undefined;
+  const plane = options.plane ?? new ControlPlane(ownedStore);
+  const persistentDeviceStore = plane.store.saveDevice && plane.store.listDevices
+    ? {
+        saveDevice: plane.store.saveDevice.bind(plane.store),
+        listDevices: plane.store.listDevices.bind(plane.store),
+      }
+    : undefined;
+  const deviceRegistry = options.deviceRegistry ?? new DeviceRegistry(
+    persistentDeviceStore ? { store: persistentDeviceStore } : {},
+  );
+  const provider = options.provider ?? (process.env.CCRF_PROVIDER ? createProviderAdapterFromEnvironment() : undefined);
+  const activeExecutions = new Map<string, ActiveExecutionHandle>();
+  const sseCleanups = new Set<() => void>();
+  let bound = false;
+  let storeClosed = false;
+
   const server = createServer((request, response) => {
     void handleControlRequest(request, response, {
       plane,
@@ -79,13 +110,15 @@ export function createHttpControlServer(options: HttpControlServerOptions = {}):
       totpSecret: options.totpSecret,
       deviceRegistry,
       ...(provider === undefined ? {} : { provider }),
+      activeExecutions,
+      sseCleanups,
       maxBodyBytes,
       version: options.version ?? "0.1.0",
     });
   });
-  // A public listener must not let a slow client hold an unbounded request
-  // open. These limits apply to headers/body framing, not provider execution.
-  server.requestTimeout = 15_000;
+  // Long-running SSE streams and provider executions outlive header/body framing;
+  // request body reads enforce their own bounded timeout in readJson().
+  server.requestTimeout = 0;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5_000;
 
@@ -109,11 +142,25 @@ export function createHttpControlServer(options: HttpControlServerOptions = {}):
       });
     },
     async close() {
-      if (!bound) return;
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
-      });
-      bound = false;
+      for (const handle of activeExecutions.values()) {
+        handle.abort();
+      }
+      activeExecutions.clear();
+      for (const cleanup of [...sseCleanups]) {
+        cleanup();
+      }
+      sseCleanups.clear();
+      if (bound) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => error ? reject(error) : resolve());
+          server.closeIdleConnections?.();
+        });
+        bound = false;
+      }
+      if (ownedStore && !storeClosed) {
+        storeClosed = true;
+        ownedStore.close();
+      }
     },
     address() {
       const value = server.address();
@@ -146,6 +193,28 @@ export async function handleControlRequest(
   };
 
   try {
+    if (method === "GET" && url.pathname === "/favicon.ico") {
+      response.statusCode = 204;
+      response.end();
+      return;
+    }
+
+    const staticAsset = method === "GET" ? STATIC_WEB_ASSETS[url.pathname] : undefined;
+    if (staticAsset) {
+      const file = join(WEB_ROOT, staticAsset.file);
+      try {
+        const body = await readFile(file);
+        response.statusCode = 200;
+        response.setHeader("Content-Type", staticAsset.contentType);
+        response.setHeader("Content-Security-Policy", "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.end(body);
+      } catch {
+        writeJson(response, 404, { ok: false, error: { code: "NOT_FOUND", message: "Asset not found" } });
+      }
+      return;
+    }
+
     if (method === "POST" && segments.length === 3 && segments[0] === "v1" && segments[1] === "devices" && segments[2] === "redeem-pair") {
       if (!options.deviceRegistry) throw new ProtocolError("UNKNOWN", "Device registry is unavailable");
       const body = await readJson(request, options.maxBodyBytes);
@@ -170,23 +239,6 @@ export async function handleControlRequest(
         });
     if (!authorized) {
       writeJson(response, 401, { ok: false, error: { code: "UNAUTHORIZED", message: "Authentication required" } });
-      return;
-    }
-
-    if (method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/web/"))) {
-      const asset = url.pathname === "/" ? "index.html" : url.pathname.slice("/web/".length);
-      if (!/^[a-zA-Z0-9._-]+$/.test(asset)) { writeJson(response, 404, { ok: false, error: { code: "NOT_FOUND", message: "Asset not found" } }); return; }
-      const file = join(WEB_ROOT, asset);
-      try {
-        const body = await readFile(file);
-        response.statusCode = 200;
-        response.setHeader("Content-Type", asset.endsWith(".js") ? "text/javascript; charset=utf-8" : asset.endsWith(".css") ? "text/css; charset=utf-8" : "text/html; charset=utf-8");
-        response.setHeader("Content-Security-Policy", "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'");
-        response.setHeader("X-Content-Type-Options", "nosniff");
-        response.end(body);
-      } catch {
-        writeJson(response, 404, { ok: false, error: { code: "NOT_FOUND", message: "Asset not found" } });
-      }
       return;
     }
 
@@ -370,6 +422,8 @@ export async function handleControlRequest(
       const headerCursor = typeof request.headers["last-event-id"] === "string" ? request.headers["last-event-id"] : null;
       const cursor = parseCursor(url.searchParams.get("cursor") ?? headerCursor);
       const once = url.searchParams.get("once") === "1";
+      request.setTimeout?.(0);
+      response.setTimeout?.(0);
       response.statusCode = 200;
       response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
       response.setHeader("Cache-Control", "no-cache");
@@ -391,17 +445,28 @@ export async function handleControlRequest(
       }
       response.write(initial);
       let ticks = 0;
+      let cleanedUp = false;
       const timer = setInterval(() => {
         if (response.destroyed || response.writableEnded) {
-          clearInterval(timer);
+          cleanup();
           return;
         }
         ticks += 1;
         const chunk = renderBatch();
         if (chunk) response.write(chunk);
         else if (ticks % 30 === 0) response.write(": ping\n\n");
-      }, 500);
-      const cleanup = () => clearInterval(timer);
+      }, 250);
+      timer.unref?.();
+      const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        clearInterval(timer);
+        options.sseCleanups?.delete(cleanup);
+        if (!response.destroyed && !response.writableEnded && typeof response.end === "function") {
+          response.end();
+        }
+      };
+      options.sseCleanups?.add(cleanup);
       request.on?.("close", cleanup);
       response.on?.("close", cleanup);
       return;
@@ -427,12 +492,13 @@ export async function handleControlRequest(
       const idempotencyKey = boundedString(body.idempotencyKey, "idempotencyKey", 200);
       const generation = nonNegativeInteger(body.generation, "generation");
       const shouldExecute = body.execute === true;
+      const runAsync = body.async === true;
       const requestedApprovalMode = body.approvalMode === undefined
         ? undefined
         : parseEnum(body.approvalMode, "approvalMode", isApprovalMode);
-      if (body.reasoningEffort !== undefined) {
-        parseEnum(body.reasoningEffort, "reasoningEffort", isReasoningEffort);
-      }
+      const requestedReasoningEffort = body.reasoningEffort === undefined
+        ? undefined
+        : parseEnum(body.reasoningEffort, "reasoningEffort", isReasoningEffort);
       if (shouldExecute && (!options.provider || options.provider.name === "unconfigured")) {
         throw new ProtocolError("UNKNOWN", "No provider adapter is configured");
       }
@@ -448,13 +514,44 @@ export async function handleControlRequest(
         idempotencyKey,
         payload: { prompt },
       }, prompt);
-      if (shouldExecute && options.provider) {
+      if (shouldExecute && options.provider && run.lifecycle.status === "queued") {
         const leaseId = `lease-${randomUUID()}`;
         options.plane.leaseRun(sessionId, run.runId, leaseId, 60_000);
+        const controller = new AbortController();
+        options.activeExecutions?.set(run.runId, {
+          sessionId,
+          abort: () => controller.abort(),
+        });
+        const heartbeat = setInterval(() => {
+          try {
+            options.plane.renewRunLease(sessionId, run.runId, leaseId, 60_000);
+          } catch {
+            clearInterval(heartbeat);
+          }
+        }, 20_000);
+        heartbeat.unref?.();
         const execution = new ExecutionService(options.plane, options.provider);
         const effectiveMode = requestedApprovalMode ?? sessionRecord.approvalMode;
+        const effectiveEffort = requestedReasoningEffort ?? sessionRecord.reasoningEffort;
         const executionPrompt = effectiveMode === "plan-only" ? `[PLAN-ONLY MODE]\n${prompt}` : prompt;
-        await execution.execute(sessionId, run.runId, leaseId, { runId: run.runId, prompt: executionPrompt });
+        const runPromise = execution.execute(sessionId, run.runId, leaseId, {
+          runId: run.runId,
+          prompt: executionPrompt,
+          signal: controller.signal,
+          ...(effectiveMode !== undefined ? { approvalMode: effectiveMode } : {}),
+          ...(effectiveEffort !== undefined ? { reasoningEffort: effectiveEffort } : {}),
+        }).finally(() => {
+          clearInterval(heartbeat);
+          if (options.activeExecutions?.get(run.runId)?.sessionId === sessionId) {
+            options.activeExecutions.delete(run.runId);
+          }
+        });
+        if (runAsync) {
+          void runPromise.catch(() => {});
+          writeJson(response, 202, { ok: true, data: runMetadata(options.plane.getRun(sessionId, run.runId)) });
+          return;
+        }
+        await runPromise;
         writeJson(response, 201, { ok: true, data: runMetadata(options.plane.getRun(sessionId, run.runId)) });
         return;
       }
@@ -465,7 +562,13 @@ export async function handleControlRequest(
       const body = await readJson(request, options.maxBodyBytes);
       const runId = requiredId(body.runId, "runId");
       const leaseId = requiredId(body.leaseId, "leaseId");
-      writeJson(response, 200, { ok: true, data: runMetadata(options.plane.cancelRun(sessionId, runId, leaseId)) });
+      const cancelled = options.plane.cancelRun(sessionId, runId, leaseId);
+      const active = options.activeExecutions?.get(runId);
+      if (active && active.sessionId === sessionId) {
+        active.abort();
+        options.activeExecutions?.delete(runId);
+      }
+      writeJson(response, 200, { ok: true, data: runMetadata(cancelled) });
       return;
     }
     if (method === "POST" && segments.length === 5 && segments[3] === "runs" && segments[4] === "approve") {
@@ -522,6 +625,18 @@ export async function handleControlRequest(
 
     writeJson(response, 404, { ok: false, error: { code: "NOT_FOUND", message: "Route not found" } });
   } catch (error) {
+    if (
+      error instanceof ProtocolError
+      && error.code === "CAPABILITY_DENIED"
+      && segments[1] === "devices"
+      && segments[2] === "redeem-pair"
+    ) {
+      writeJson(response, 429, {
+        ok: false,
+        error: { code: "RATE_LIMITED", message: "Too many failed pairing attempts" },
+      });
+      return;
+    }
     const status = error instanceof ProtocolError && error.code === "NOT_FOUND" ? 404
       : error instanceof ProtocolError && error.code === "INVALID_STATE" ? 409
       : error instanceof ProtocolError && error.code === "STALE_GENERATION" ? 409
@@ -564,19 +679,32 @@ function publicProtocolMessage(code: string, fallback: string): string {
   }[code] ?? (code === "UNKNOWN" ? "Request failed" : fallback);
 }
 
-async function readJson(request: IncomingMessage, maxBytes: number): Promise<Record<string, any>> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.length;
-    if (size > maxBytes) throw new ProtocolError("INVALID_ENVELOPE", "Request body is too large");
-    chunks.push(buffer);
+async function readJson(request: IncomingMessage, maxBytes: number, timeoutMs = 15_000): Promise<Record<string, any>> {
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    const target = request as unknown as { destroy?: (err?: Error) => void };
+    target.destroy?.(new ProtocolError("INVALID_ENVELOPE", "Request body timed out"));
+  }, timeoutMs);
+  timer.unref?.();
+  try {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      if (timedOut) throw new ProtocolError("INVALID_ENVELOPE", "Request body timed out");
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      if (size > maxBytes) throw new ProtocolError("INVALID_ENVELOPE", "Request body is too large");
+      chunks.push(buffer);
+    }
+    if (timedOut) throw new ProtocolError("INVALID_ENVELOPE", "Request body timed out");
+    if (size === 0) return {};
+    const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new SyntaxError("JSON body must be an object");
+    return value;
+  } finally {
+    clearTimeout(timer);
   }
-  if (size === 0) return {};
-  const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new SyntaxError("JSON body must be an object");
-  return value;
 }
 
 function requiredId(value: unknown, name: string): string {

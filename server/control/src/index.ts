@@ -18,6 +18,8 @@ import {
 export type ApprovalMode = "manual" | "auto-edit" | "plan-only";
 export type ReasoningEffort = "low" | "medium" | "high" | "max";
 
+const ACTIVE_RUN_STATUSES = new Set<RunStatus>(["queued", "leased", "running", "awaiting_approval"]);
+
 export interface SessionMetadataOptions {
   title?: string | undefined;
   project?: string | undefined;
@@ -377,6 +379,13 @@ export class ControlPlane {
       }
       return this.copyRun(prior);
     }
+    const activeRun = session.currentRunId ? this.runs.get(session.currentRunId) : undefined;
+    if (activeRun && ACTIVE_RUN_STATUSES.has(activeRun.lifecycle.status)) {
+      throw new ProtocolError("INVALID_STATE", "Session already has an active run", {
+        sessionId: envelope.sessionId,
+        activeRunId: activeRun.runId,
+      });
+    }
     const runId = envelope.runId ?? `run-${envelope.requestId}`;
     const lifecycle = new RunLifecycle();
     const run: RunState = {
@@ -407,6 +416,12 @@ export class ControlPlane {
     });
     this.runs.set(runId, run);
     this.idempotency.set(envelope.idempotencyKey, runId);
+    this.store.saveIdempotency?.({
+      idempotencyKey: envelope.idempotencyKey,
+      sessionId: envelope.sessionId,
+      runId,
+      requestFingerprint: run.requestFingerprint,
+    });
     session.currentRunId = runId;
     return this.copyRun(run);
   }
@@ -753,6 +768,14 @@ export class ControlPlane {
       events.sort((left, right) => left.sequence - right.sequence);
       for (const event of events) {
         this.applyStoredEvent(event);
+      }
+    }
+    for (const record of this.store.listIdempotency?.() ?? []) {
+      const run = this.runs.get(record.runId);
+      if (run && run.sessionId === record.sessionId) {
+        run.idempotencyKey = record.idempotencyKey;
+        run.requestFingerprint = record.requestFingerprint;
+        this.idempotency.set(record.idempotencyKey, record.runId);
       }
     }
   }

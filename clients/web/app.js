@@ -17,6 +17,9 @@ const state = {
   generation: 0,
   run: null,
   streamController: null,
+  autoStream: true,
+  transcriptPending: false,
+  transcriptReloadQueued: false,
   lastCompositionEndAt: null,
 };
 
@@ -170,13 +173,16 @@ const loadTranscript = async (reset = false) => {
     if (reset) renderEmptyState('💬 当前会话暂无对话记录');
     return;
   }
+  const targetSession = state.session;
+  const targetRunId = state.run.runId;
   if (reset) {
     state.transcriptCursor = 0;
     $('transcript-view').replaceChildren();
   }
   const result = await api(
-    `/v1/sessions/${encodeURIComponent(state.session)}/runs/${encodeURIComponent(state.run.runId)}?cursor=${state.transcriptCursor}`,
+    `/v1/sessions/${encodeURIComponent(targetSession)}/runs/${encodeURIComponent(targetRunId)}?cursor=${state.transcriptCursor}`,
   );
+  if (state.session !== targetSession || state.run?.runId !== targetRunId) return;
   const data = result.data;
   if (!data) return;
   state.run = { ...state.run, status: data.status };
@@ -184,6 +190,7 @@ const loadTranscript = async (reset = false) => {
   const chunks = data.chunks || [];
   if (chunks.length > 0) $('empty-state')?.remove();
   for (const chunk of chunks) {
+    if (chunk.chunkIndex < state.transcriptCursor) continue;
     const box = document.createElement('div');
     box.className = `chunk ${chunk.role === 'prompt' ? 'prompt' : 'output'}`;
     const head = document.createElement('div');
@@ -194,13 +201,14 @@ const loadTranscript = async (reset = false) => {
     body.textContent = chunk.text;
     box.append(head, body);
     $('transcript-view').append(box);
+    state.transcriptCursor = Math.max(state.transcriptCursor, chunk.chunkIndex + 1);
   }
   if ($('transcript-view').children.length === 0) {
     renderEmptyState('💬 当前会话暂无对话记录');
   }
   $('transcript-view').scrollTop = $('transcript-view').scrollHeight;
   if (typeof data.nextCursor === 'number') {
-    state.transcriptCursor = data.nextCursor;
+    state.transcriptCursor = Math.max(state.transcriptCursor, data.nextCursor);
   }
 };
 
@@ -287,6 +295,85 @@ const stopStream = () => {
   }
 };
 
+const scheduleTranscriptRefresh = () => {
+  if (state.transcriptPending) {
+    state.transcriptReloadQueued = true;
+    return;
+  }
+  state.transcriptPending = true;
+  void loadTranscript(false)
+    .catch(showError)
+    .finally(() => {
+      state.transcriptPending = false;
+      if (state.transcriptReloadQueued) {
+        state.transcriptReloadQueued = false;
+        scheduleTranscriptRefresh();
+      }
+    });
+};
+
+const REFRESH_STATE_EVENTS = new Set([
+  'RunStarted',
+  'ApprovalRequested',
+  'ApprovalResponded',
+  'RunCompleted',
+  'RunFailed',
+  'RunCancelled',
+  'RunUnknown',
+  'SessionUpdated',
+]);
+
+const startStream = async () => {
+  if (!state.session || state.streamController) return;
+  const controller = new AbortController();
+  state.streamController = controller;
+  $('toggle-stream').textContent = '停止 SSE';
+  try {
+    const headers = {
+      accept: 'text/event-stream',
+      ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
+      ...(state.totp ? { 'x-ccrf-totp': state.totp } : {}),
+    };
+    const response = await fetch(
+      `${state.base}/v1/sessions/${encodeURIComponent(state.session)}/stream?cursor=${state.cursor}`,
+      { headers, signal: controller.signal },
+    );
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() ?? '';
+      for (const block of blocks) {
+        const dataLine = block.split('\n').find((line) => line.startsWith('data: '));
+        if (!dataLine) continue;
+        const parsed = JSON.parse(dataLine.slice(6));
+        appendEventItem(parsed);
+        if (parsed.type === 'OutputChunk') {
+          scheduleTranscriptRefresh();
+        } else if (REFRESH_STATE_EVENTS.has(parsed.type)) {
+          try {
+            const detail = await api(`/v1/sessions/${encodeURIComponent(state.session)}`);
+            if (detail?.data) renderSession(detail.data);
+          } catch {
+            // Ignore transient detail fetch failures while streaming.
+          }
+          scheduleTranscriptRefresh();
+          void loadSessions().catch(() => {});
+        }
+      }
+    }
+  } catch (error) {
+    if (error.name !== 'AbortError') showError(error);
+  } finally {
+    if (state.streamController === controller) stopStream();
+  }
+};
+
 const selectSession = async (sessionId) => {
   stopStream();
   showError('');
@@ -304,6 +391,9 @@ const selectSession = async (sessionId) => {
   renderSession(detail.data);
   restoreDraft(sessionId);
   await Promise.all([loadSessions(), refreshEvents(), loadTranscript(true)]);
+  if (state.autoStream) {
+    void startStream();
+  }
 };
 
 const generateSessionId = () => {
@@ -355,6 +445,43 @@ $('connect-form').addEventListener('submit', async (event) => {
   try {
     await connectAndLoad();
     showNotice('已连接控制服务器');
+  } catch (error) {
+    showError(error);
+  }
+});
+
+$('pair-login-toggle').addEventListener('click', () => {
+  const form = $('pair-login-form');
+  form.hidden = !form.hidden;
+  if (!form.hidden) $('pair-code-input').focus();
+});
+
+$('pair-login-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  showError('');
+  showNotice('');
+  const base = ($('connect-base').value.trim() || state.base || location.origin).replace(/\/$/, '');
+  const code = $('pair-code-input').value.trim();
+  if (!code) return;
+  try {
+    const response = await fetch(`${base}/v1/devices/redeem-pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.ok === false || !body.data?.credential) {
+      throw new Error(body.error?.message || `HTTP ${response.status}`);
+    }
+    const issuedCred = body.data.credential;
+    state.base = base;
+    state.token = issuedCred;
+    $('connect-base').value = base === location.origin ? '' : base;
+    $('connect-token').value = issuedCred;
+    $('pair-code-input').value = '';
+    $('pair-login-form').hidden = true;
+    await connectAndLoad();
+    showNotice(`已通过6位配对码绑定设备: ${body.data.device?.deviceId || 'device'}`);
   } catch (error) {
     showError(error);
   }
@@ -567,6 +694,7 @@ const submitPrompt = async (promptText) => {
         idempotencyKey: crypto.randomUUID(),
         prompt: promptText,
         execute,
+        ...(execute ? { async: true } : {}),
         approvalMode,
         reasoningEffort,
       }),
@@ -575,13 +703,14 @@ const submitPrompt = async (promptText) => {
     state.transcriptCursor = 0;
     $('prompt-input').value = '';
     saveDraft();
-    const [, , , detail] = await Promise.all([
-      refreshEvents(),
-      loadTranscript(true),
-      loadSessions(),
-      api(`/v1/sessions/${encodeURIComponent(state.session)}`),
-    ]);
-    if (detail?.data) renderSession(detail.data);
+    renderRunState();
+    await loadTranscript(true);
+    if (state.autoStream && !state.streamController) {
+      void startStream();
+    }
+    if (!execute) {
+      await Promise.all([refreshEvents(), loadSessions()]);
+    }
   } catch (error) {
     $('retry-last').hidden = false;
     showError(error);
@@ -648,46 +777,14 @@ for (const [id, action] of [['disconnect', 'disconnect'], ['reconnect', 'reconne
 
 $('refresh').addEventListener('click', () => Promise.all([refreshEvents(), loadTranscript(false)]).catch(showError));
 
-$('toggle-stream').addEventListener('click', async () => {
+$('toggle-stream').addEventListener('click', () => {
   if (state.streamController) {
+    state.autoStream = false;
     stopStream();
     return;
   }
-  if (!state.session) return;
-  const controller = new AbortController();
-  state.streamController = controller;
-  $('toggle-stream').textContent = '停止 SSE';
-  try {
-    const headers = {
-      accept: 'text/event-stream',
-      ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
-      ...(state.totp ? { 'x-ccrf-totp': state.totp } : {}),
-    };
-    const response = await fetch(
-      `${state.base}/v1/sessions/${encodeURIComponent(state.session)}/stream?cursor=${state.cursor}`,
-      { headers, signal: controller.signal },
-    );
-    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split('\n\n');
-      buffer = blocks.pop() ?? '';
-      for (const block of blocks) {
-        const dataLine = block.split('\n').find((line) => line.startsWith('data: '));
-        if (!dataLine) continue;
-        appendEventItem(JSON.parse(dataLine.slice(6)));
-      }
-    }
-  } catch (error) {
-    if (error.name !== 'AbortError') showError(error);
-  } finally {
-    if (state.streamController === controller) stopStream();
-  }
+  state.autoStream = true;
+  void startStream();
 });
 
 window.addEventListener('DOMContentLoaded', async () => {

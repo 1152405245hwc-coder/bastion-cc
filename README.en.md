@@ -25,11 +25,11 @@
    - Per-session `accountProfile` maps to isolated `CLAUDE_CONFIG_DIR` folders under `CCRF_ACCOUNTS_ROOT` with consistent timezone/locale defaults (`America/Los_Angeles`, `en_US.UTF-8`).
    - Hardened Electron shell routes Claude login links via `link-router.mjs` to an isolated browser profile without patching third-party binaries.
 3. **Unified Clients (Desktop, Web, CLI)**
-   - **Desktop (`clients/desktop`)**: Electron shell with `sandbox: true`, `contextIsolation: true`, adaptive Light/Dark UI, one-click local server/runner toggles, and native folder picker.
-   - **Web Workbench (`clients/web`)**: Dependency-free static UI under strict CSP featuring project grouping, live cache hit badge, SSE streaming, fork/export, per-session draft persistence, and IME-safe Enter-to-submit.
-   - **Remote CLI (`clients/cli`)**: One-shot `chat <sessionId> <prompt>` and `pair <code>` workflows.
-4. **HAPI-Style 6-Digit Pairing & Scoped Device Tokens**
-   - Generate single-use 5-minute pairing codes (`POST /v1/devices/pair-code`), redeem via `POST /v1/devices/redeem-pair`, and enforce least-privilege scopes (`control`, `read`, `runner`) plus optional RFC 6238 TOTP.
+   - **Desktop (`clients/desktop`)**: Electron shell with `sandbox: true`, `contextIsolation: true`, adaptive Light/Dark UI, live SSE stream bridge, 6-digit pairing login, one-click local server/runner toggles, and native folder picker.
+   - **Web Workbench (`clients/web`)**: Dependency-free static UI under strict CSP featuring async long-running runs, automatic SSE live transcript & approval updates, 6-digit pairing login, project grouping, live cache hit badge, fork/export, per-session draft persistence, and IME-safe Enter-to-submit.
+   - **Remote CLI (`clients/cli` / `bastioncc`)**: One-shot `chat <sessionId> <prompt>` (`--json` supported), interactive `repl <sessionId>`, and `pair <code>` workflows.
+4. **6-Digit Pairing & Persistent Scoped Device Tokens**
+   - Generate single-use 5-minute pairing codes (`POST /v1/devices/pair-code`), redeem via `POST /v1/devices/redeem-pair` with brute-force lockout protection, persist enrolled/revoked devices & idempotency keys in SQLite, enforce least-privilege scopes (`control`, `read`, `runner`), and optionally layer RFC 6238 TOTP.
 5. **Control / Encrypted Body / Outbound Execution Separation**
    - Metadata-only SQLite `events` log separated from optional AES-256-GCM encrypted `run_bodies` (`CCRF_BODY_KEY`) with chunked pagination and idle compaction.
    - `OutboundRunnerDaemon` polls outbound from your workstation with zero inbound firewall ports required.
@@ -50,11 +50,22 @@ CCRF_EVENT_DB="$PWD/.local/events.sqlite" CCRF_PROVIDER=mock npm run start:serve
 To run against an authenticated `claude` CLI on a server bastion:
 
 ```sh
+export CCRF_BIND_HOST="127.0.0.1" # Alias CCRF_HOST also accepted
+export CCRF_BIND_PORT="8787"      # Alias CCRF_PORT also accepted
 export CCRF_EVENT_DB="/var/lib/bastion-cc/events.sqlite"
 export CCRF_BODY_KEY="REPLACE_WITH_LONG_RANDOM_PASSPHRASE"
 export CCRF_AUTH_TOKEN="REPLACE_WITH_STRONG_BEARER_TOKEN"
 export CCRF_PROVIDER="claude-cli"
 node scripts/start-server.mjs
+```
+
+Interactive CLI / one-shot chat:
+
+```sh
+./scripts/bastioncc.mjs --url http://127.0.0.1:8787 pair 123456
+export CCRF_AUTH_TOKEN="YOUR_DEVICE_TOKEN_HERE"
+./scripts/bastioncc.mjs --url http://127.0.0.1:8787 chat backend-fix "Audit idempotency"
+./scripts/bastioncc.mjs --url http://127.0.0.1:8787 repl backend-fix
 ```
 
 ---
@@ -77,6 +88,7 @@ docs/                 Architecture, threat model, capability matrix, runbooks, a
 
 ```sh
 npm run check
+npm run test:python
 python3 -B security/verification/public_scan.py
 python3 -B security/verification/release_gate.py
 ```

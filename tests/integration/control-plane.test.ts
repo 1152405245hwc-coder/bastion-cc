@@ -146,3 +146,57 @@ test("session metadata, project filtering, fork, export, metrics, and hydration"
   assert.equal(rehydrated.getSession("alpha").approvalMode, "plan-only");
   assert.equal(rehydrated.getSession("alpha-fork").parentSessionId, "alpha");
 });
+
+test("startRun rejects overlapping active runs on the same session while permitting idempotent retries", () => {
+  const plane = new ControlPlane();
+  plane.createSession("concurrent-s1");
+  const run1 = plane.startRun({
+    protocolMajor: 1,
+    protocolMinor: 0,
+    messageType: "run.start",
+    requestId: "r-c1",
+    sessionId: "concurrent-s1",
+    generation: 0,
+    idempotencyKey: "idem-c1",
+    payload: { prompt: "first" },
+  }, "first");
+
+  const retry = plane.startRun({
+    protocolMajor: 1,
+    protocolMinor: 0,
+    messageType: "run.start",
+    requestId: "r-c1-retry",
+    sessionId: "concurrent-s1",
+    generation: 0,
+    idempotencyKey: "idem-c1",
+    payload: { prompt: "first" },
+  }, "first");
+  assert.equal(retry.runId, run1.runId);
+
+  assert.throws(() => plane.startRun({
+    protocolMajor: 1,
+    protocolMinor: 0,
+    messageType: "run.start",
+    requestId: "r-c2",
+    sessionId: "concurrent-s1",
+    generation: 0,
+    idempotencyKey: "idem-c2",
+    payload: { prompt: "second" },
+  }, "second"), (err: unknown) => err instanceof ProtocolError && err.code === "INVALID_STATE");
+
+  plane.leaseRun("concurrent-s1", run1.runId, "lease-c1", 60_000);
+  plane.markRunning("concurrent-s1", run1.runId, "lease-c1");
+  plane.completeRun("concurrent-s1", run1.runId, "lease-c1", "completed");
+
+  const run2 = plane.startRun({
+    protocolMajor: 1,
+    protocolMinor: 0,
+    messageType: "run.start",
+    requestId: "r-c2",
+    sessionId: "concurrent-s1",
+    generation: 0,
+    idempotencyKey: "idem-c2",
+    payload: { prompt: "second" },
+  }, "second");
+  assert.notEqual(run2.runId, run1.runId);
+});

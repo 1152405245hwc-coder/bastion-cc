@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { authorize, DeviceRegistry, verifyTotp } from "../../server/auth/src/index.ts";
+import { ProtocolError } from "../../core/protocol/src/index.ts";
+import { EventStore } from "../../server/storage/src/index.ts";
 
 test("TOTP verifies RFC 6238-compatible six digit code", () => {
   const seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
@@ -62,4 +64,52 @@ test("DeviceRegistry issues single-use 6-digit pairing codes with expiry", () =>
     nowMs: now,
   });
   assert.throws(() => registry.redeemPairingCode(expired.code, now + 2000), /Invalid or expired pairing code/);
+});
+
+test("DeviceRegistry persists enrolled/revoked devices and locks pairing after repeated failures", () => {
+  const store = new EventStore();
+  const registry1 = new DeviceRegistry({
+    store,
+    maxFailedPairAttempts: 5,
+    pairLockoutWindowMs: 60_000,
+  });
+  const now = 3_000_000;
+  const active = registry1.enroll({ deviceId: "dev-keep", label: "Keep", scopes: ["control", "read"], nowMs: now });
+  const stale = registry1.enroll({ deviceId: "dev-drop", label: "Drop", scopes: ["read"], nowMs: now });
+  registry1.revoke("dev-drop", now + 100);
+
+  const registry2 = new DeviceRegistry({
+    store,
+    maxFailedPairAttempts: 5,
+    pairLockoutWindowMs: 60_000,
+  });
+  assert.ok(registry2.verify(active.credential, "control", now + 200));
+  assert.equal(registry2.verify(stale.credential, "read", now + 200), undefined);
+
+  const issued = registry2.createPairingCode({
+    deviceId: "dev-locked",
+    label: "Locked",
+    scopes: ["read"],
+    nowMs: now + 300,
+  });
+  const wrong = issued.code === "111111" ? "222222" : "111111";
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    assert.throws(
+      () => registry2.redeemPairingCode(wrong, now + 400 + attempt),
+      (err: unknown) => err instanceof ProtocolError && err.code === "NOT_FOUND",
+    );
+  }
+  assert.throws(
+    () => registry2.redeemPairingCode(issued.code, now + 500),
+    (err: unknown) => err instanceof ProtocolError && err.code === "CAPABILITY_DENIED",
+  );
+  // After lockout window expires, a newly issued pairing code succeeds.
+  const fresh = registry2.createPairingCode({
+    deviceId: "dev-recovered",
+    label: "Recovered",
+    scopes: ["read"],
+    nowMs: now + 70_000,
+  });
+  const redeemed = registry2.redeemPairingCode(fresh.code, now + 71_000);
+  assert.equal(redeemed.device.deviceId, "dev-recovered");
 });

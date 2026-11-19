@@ -19,6 +19,13 @@ services:
       CCRF_AUTH_TOKEN: "${CCRF_AUTH_TOKEN:?set CCRF_AUTH_TOKEN in private env}"
       CCRF_TOTP_SECRET: "${CCRF_TOTP_SECRET:-}"
       CCRF_BODY_KEY: "${CCRF_BODY_KEY:-}"
+      CCRF_ACCOUNTS_ROOT: "${CCRF_ACCOUNTS_ROOT:-}"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + (process.env.CCRF_BIND_PORT || 8787) + '/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     volumes:
       - /srv/cc-relay-forge:/data
     restart: unless-stopped
