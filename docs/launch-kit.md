@@ -51,14 +51,15 @@
 3. **傻瓜式桌面端 + 网页工作台 + 一线 CLI**：
    - Electron 桌面端自带 **⚡ 一键本地服务 / 🏃 本机执行器**，点一下就能本地跑起来；支持原生系统选目录、深浅色自适应、对话草稿按会话保存、中文输入法按 Enter 防误触。
    - 会话支持 **按项目目录分组、实时搜索、重命名、分叉（Fork）、Markdown 一键导出**。
-   - 终端党直接用内置远程 CLI：`ccrf chat backend-fix "排查鉴权问题"` 一行自动建会话、跑服务端并续接上下文。
+   - 终端党直接用内置远程 CLI：`./scripts/bastioncc.mjs --url http://127.0.0.1:8787 chat backend-fix "排查鉴权问题"`（或 `repl backend-fix` 进入交互续聊）自动建会话、跑服务端并续接上下文。
 4. **手机 6 位配对码 & 安全分层**：
-   - 支持生成 5 分钟单次有效的 **6 位配对码**（免手抄长令牌），支持分权作用域（`control` / `read` / `runner`）和 TOTP 二次验证。
+   - 支持生成 5 分钟单次有效的 **6 位配对码**（免手抄长令牌），连续输错自动锁定防爆破；支持分权作用域（`control` / `read` / `runner`）和 TOTP 二次验证，已配对设备与幂等键持久化存入 SQLite。
    - 敏感对话正文支持 **AES-256-GCM** 独立加密存入 `run_bodies`，事件时间线与通知器只读脱敏元数据。
 
 欢迎试玩、提 Issue 或 PR！
+- 仓库主页：https://github.com/liangsiweiethan-wq/bastion-cc
 - 代码与架构设计：[README.md](../README.md)
-- 安全模型与独立测试：仓库内置 70+ 契约/集成/恢复测试及全历史隐私扫描门禁，开箱本地 `MockProviderAdapter` 无需账号即可体验全部工作流。
+- 安全模型与独立测试：仓库内置 92 项自动化测试（87 项 JS/TS 契约/集成/Socket E2E + 5 项 Python 运维测试）及全历史隐私扫描门禁，开箱本地 `MockProviderAdapter` 无需账号即可体验全部工作流。
 
 ---
 

@@ -1,5 +1,10 @@
 # BastionCC（棱堡）
 
+[![CI](https://github.com/liangsiweiethan-wq/bastion-cc/actions/workflows/check.yml/badge.svg)](https://github.com/liangsiweiethan-wq/bastion-cc/actions/workflows/check.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square)](LICENSE)
+[![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-339933?style=flat-square)](package.json)
+[![Runtime Dependencies: 0](https://img.shields.io/badge/Runtime%20Deps-0-000?style=flat-square)](package.json)
+
 [English](README.en.md) · [宣发文案](docs/launch-kit.md) · [架构设计](docs/architecture.md) · [威胁模型](docs/threat-model.md) · [能力矩阵](docs/capabilities.md)
 
 **把官方 Claude Code CLI 稳固地部署在可信海外服务器（棱堡）中，通过原生 `--resume` 完整保留高缓存命中率与上下文；你在电脑、浏览器或手机上只需轻量化直连，就能实现 24 小时不断线运行、多账号防串线隔离、本地跑腿执行与高危审批。**
@@ -77,7 +82,7 @@ flowchart TB
 ### 方式一：本地无账号试跑（使用内置 Mock Adapter）
 
 ```sh
-git clone <YOUR_FORK_OR_REPO_URL> bastion-cc
+git clone https://github.com/liangsiweiethan-wq/bastion-cc.git bastion-cc
 cd bastion-cc
 
 install -d -m 700 .local
