@@ -1,5 +1,24 @@
 const $ = (id) => document.getElementById(id);
 
+const THEME_KEY = 'bastioncc.theme';
+
+const applyTheme = (theme) => {
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  const toggle = $('theme-toggle');
+  if (!toggle) return;
+  const action = next === 'dark' ? '切换浅色主题' : '切换深色主题';
+  toggle.setAttribute('aria-label', action);
+  toggle.setAttribute('title', action);
+  const label = toggle.querySelector('.btn-label');
+  if (label) label.textContent = next === 'dark' ? '深色' : '浅色';
+};
+
+const savedTheme = (() => {
+  try { return localStorage.getItem(THEME_KEY); } catch { return null; }
+})();
+applyTheme(savedTheme === 'dark' ? 'dark' : 'light');
+
 const DRAFT_PREFIX = 'ccrf:draft:';
 const LAST_SESSION_KEY = 'ccrf:last-session';
 
@@ -457,6 +476,12 @@ $('toggle-local-runner').addEventListener('click', async () => {
   } catch (error) {
     showError(error);
   }
+});
+
+$('theme-toggle').addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem(THEME_KEY, next); } catch { /* ignore storage failures */ }
+  applyTheme(next);
 });
 
 $('connect-form').addEventListener('submit', async (event) => {
